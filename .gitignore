@@ -4,3 +4,8 @@ __pycache__/
 *.log
 tmp-*.xlsx
 debug/
+build/
+dist/
+.env
+
+EcoKing - tabela potrošnje - Jul 2026. TEST.xlsx
