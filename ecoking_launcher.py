@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import calendar
 import queue
 import re
 import shutil
@@ -9,7 +10,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # 1. Import load_dotenv
@@ -30,10 +31,20 @@ ROOT = app_root()
 load_dotenv(dotenv_path=ROOT / ".env")
 
 # Now your app can safely access environment variables
-DEFAULT_WORKBOOK = ROOT / "EcoKing - tabela potrošnje - Jul 2026. TEST.xlsx"
 DEFAULT_STATIONS = ROOT / "herceg_novi_stations.json"
 LOG_DIR = ROOT / "logs"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def desktop_directory() -> Path:
+    candidates = [Path.home() / "Desktop"]
+    if os.environ.get("OneDrive"):
+        candidates.append(Path(os.environ["OneDrive"]) / "Desktop")
+    return next((path for path in candidates if path.is_dir()), ROOT)
+
+
+def report_output_path(selected_date: str) -> Path:
+    return desktop_directory() / f"EcoKing_Report_{selected_date}.xlsx"
 
 
 def run_scraper_from_frozen_exe() -> int:
@@ -194,6 +205,7 @@ def translate_log_line(line: str) -> str:
         prefix = f"{time_part} {level_sr:<10} "
 
     replacements: list[tuple[re.Pattern[str], str]] = [
+        (re.compile(r"^REPORT GENERATED SUCCESSFULLY: (.+) for (.+) with (\d+) mapped rows$"), r"USPJEŠNO KREIRAN IZVJEŠTAJ: \1 za datum \2 sa \3 mapiranih redova"),
         (re.compile(r"^Loaded (\d+) workbook rows from (.+)$"), r"Učitano je \1 redova iz Excel fajla \2"),
         (re.compile(r"^Loaded (\d+) location mappings from (.+)$"), r"Učitano je \1 mapiranja lokacija iz \2"),
         (re.compile(r"^Built (\d+) station-driven scrape jobs from (\d+) mappings$"), r"Pripremljeno je \1 zadataka iz \2 mapiranja stanica"),
@@ -215,6 +227,7 @@ def translate_log_line(line: str) -> str:
         (re.compile(r"^Clicked interval option '(.+)'$"), r"Kliknut je interval '\1'"),
         (re.compile(r"^Clicking interval button with selector (.+)$"), r"Klik na dugme intervala preko selektora \1"),
         (re.compile(r"^Read (.+): daily=(.+) m3, max=(.+) m3, min=(.+) m3$"), r"Očitano za \1: dnevno=\2 m3, maksimum=\3 m3, minimum=\4 m3"),
+        (re.compile(r'^FOUND: MIN: (.+) MAX: (.+) DAILY: (.+) BATTERY: (.+) for "(.+)"$'), r'PRONAĐENO: MIN=\1, MAX=\2, DNEVNO=\3, BATERIJA=\4 za "\5"'),
         (re.compile(r'^FOUND: MIN: (.+) MAX: (.+) DAILY: (.+) for "(.+)"$'), r'PRONAĐENO: MIN=\1, MAX=\2, DNEVNO=\3 za "\4"'),
         (re.compile(r"^Failed to scrape station (.+) for Excel row (.+)$"), r"Neuspjelo očitavanje stanice \1 za Excel red \2"),
         (re.compile(r"^Search query (.+) failed for (.+)\. Trying fallback query\.$"), r"Pretraga \1 nije uspjela za \2. Pokušavam rezervnu pretragu."),
@@ -251,7 +264,10 @@ class EcoKingLauncher(ttk.Frame):
         self.state = LauncherState()
         self.log_queue: queue.Queue[str | tuple[str, int]] = queue.Queue()
 
-        self.workbook_var = tk.StringVar(value=str(DEFAULT_WORKBOOK))
+        default_date = datetime.now() - timedelta(days=1)
+        self.workbook_var = tk.StringVar(value=str(report_output_path(default_date.strftime('%Y-%m-%d'))))
+        self.selected_date_var = tk.StringVar(value=default_date.strftime("%Y-%m-%d"))
+        self.selected_date_display_var = tk.StringVar(value=default_date.strftime("%d/%m/%Y"))
         self.browser_visible_var = tk.BooleanVar(value=True)
         self.verbose_var = tk.BooleanVar(value=True)
         self.keep_open_var = tk.BooleanVar(value=False)
@@ -325,7 +341,7 @@ class EcoKingLauncher(ttk.Frame):
         ttk.Label(header, text="EcoKing Dnevni Obračun", style="HeaderTitle.TLabel").pack(anchor=tk.W)
         ttk.Label(
             header,
-            text="Automatizovano očitavanje vodomjera i generisanje izvještaja za jučerašnji dan.",
+            text="Automatizovano očitavanje vodomjera i generisanje izvještaja za izabrani dan.",
             style="HeaderSub.TLabel",
         ).pack(anchor=tk.W, pady=(2, 0))
 
@@ -363,24 +379,81 @@ class EcoKingLauncher(ttk.Frame):
         row.pack(fill=tk.X, pady=(0, 4))
         row.columnconfigure(0, weight=1)
 
-        entry = ttk.Entry(row, textvariable=self.workbook_var, font=("Segoe UI", 9))
+        entry = ttk.Entry(row, textvariable=self.workbook_var, font=("Segoe UI", 9), state="readonly")
         entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ToolTip(entry, "Putanja do ciljnog Excel fajla u koji će se upisati novi dnevni podaci.")
 
-        browse_btn = ttk.Button(row, text="Izaberi...", style="Secondary.TButton", command=lambda: self._browse_path(self.workbook_var))
+        browse_btn = ttk.Button(row, text="Izaberi...", style="Secondary.TButton")
         browse_btn.grid(row=0, column=1)
+        browse_btn.grid_remove()
         ToolTip(browse_btn, "Otvara dijalog za izbor Excel fajla sa računara.")
 
         sub_label = ttk.Label(
             card,
-            text="Podaci se upisuju u list za jučerašnji datum. Postojeći list za taj dan biće zamijenjen.",
+            text="Podaci se upisuju u list za izabrani datum. Postojeći list za taj dan biće zamijenjen.",
             style="CardSub.TLabel",
             wraplength=380,
         )
         sub_label.pack(anchor=tk.W)
-        ToolTip(sub_label, "Skripta automatski kreira ili prebrisava radni list sa imenom jučerašnjeg datuma.")
+        ToolTip(sub_label, "Skripta automatski kreira ili prebrisava radni list sa imenom izabranog datuma.")
+
+        date_row = ttk.Frame(card, style="Card.TFrame")
+        date_row.pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(date_row, text="Datum podataka", style="CardLabel.TLabel").pack(side=tk.LEFT)
+        date_entry = ttk.Entry(date_row, textvariable=self.selected_date_display_var, width=14, font=("Segoe UI", 9), state="readonly")
+        date_entry.pack(side=tk.LEFT, padx=(12, 0))
+        date_button = ttk.Button(date_row, text="📅", style="Secondary.TButton", command=self._open_date_picker)
+        date_button.pack(side=tk.LEFT, padx=(6, 0))
+        ToolTip(date_entry, "Datum u formatu DD/MM/YYYY. Kliknite kalendar da izaberete datum.")
+        ToolTip(date_button, "Otvori mini kalendar za izbor datuma.")
 
         self.workbook_var.trace_add("write", lambda *_: self._refresh_command_preview())
+        self.selected_date_var.trace_add("write", lambda *_: self._refresh_command_preview())
+
+    def _set_selected_date(self, selected: datetime) -> None:
+        self.selected_date_var.set(selected.strftime("%Y-%m-%d"))
+        self.selected_date_display_var.set(selected.strftime("%d/%m/%Y"))
+        self.workbook_var.set(str(report_output_path(selected.strftime('%Y-%m-%d'))))
+
+    def _open_date_picker(self) -> None:
+        current = datetime.strptime(self.selected_date_var.get(), "%Y-%m-%d")
+        popup = tk.Toplevel(self)
+        popup.title("Izaberi datum")
+        popup.transient(self.winfo_toplevel())
+        popup.resizable(False, False)
+        popup.grab_set()
+        month_state = [current.replace(day=1)]
+
+        header = ttk.Frame(popup, padding=8)
+        header.pack(fill=tk.X)
+        title = ttk.Label(header, anchor=tk.CENTER, width=18)
+        title.pack(side=tk.LEFT, expand=True)
+        grid = ttk.Frame(popup, padding=(8, 0, 8, 8))
+        grid.pack()
+
+        def render() -> None:
+            for child in grid.winfo_children():
+                child.destroy()
+            month = month_state[0]
+            title.configure(text=month.strftime("%B %Y"))
+            for column, label in enumerate(("Po", "Ut", "Sr", "Če", "Pe", "Su", "Ne")):
+                ttk.Label(grid, text=label, width=4, anchor=tk.CENTER).grid(row=0, column=column, padx=1, pady=2)
+            today = datetime.now().date()
+            for index, day in enumerate(calendar.monthcalendar(month.year, month.month), start=1):
+                for column, value in enumerate(day):
+                    if not value:
+                        continue
+                    candidate = datetime(month.year, month.month, value)
+                    button = ttk.Button(grid, text=str(value), width=4)
+                    button.grid(row=index, column=column, padx=1, pady=1)
+                    if candidate.date() > today:
+                        button.configure(state=tk.DISABLED)
+                    else:
+                        button.configure(command=lambda chosen=candidate: (self._set_selected_date(chosen), popup.destroy()))
+
+        ttk.Button(header, text="‹", width=3, command=lambda: (month_state.__setitem__(0, month_state[0] - timedelta(days=1)), render())).pack(side=tk.LEFT)
+        ttk.Button(header, text="›", width=3, command=lambda: (month_state.__setitem__(0, month_state[0] + timedelta(days=32)), render())).pack(side=tk.RIGHT)
+        render()
 
     def _build_options_card(self, parent: ttk.Frame) -> None:
         card = self._card(parent, "Postavke Pokretanja")
@@ -521,9 +594,11 @@ class EcoKingLauncher(ttk.Frame):
             cmd = [sys.executable, str(ROOT / "ecoking_daily.py")]
 
         cmd.extend([
-            "--workbook", str(sanitize_path(self.workbook_var.get())),
+            "--output", str(sanitize_path(self.workbook_var.get())),
+            "--template", str(ROOT / "ECO KING BLANKO TABLICA.xlsx"),
             "--workers", str(max(1, int(self.workers_var.get()))),
             "--slow-mo-ms", str(max(0, int(self.slowmo_var.get()))),
+            "--selected-date", self.selected_date_var.get().strip(),
         ])
         cmd.append("--headed" if self.browser_visible_var.get() else "--headless")
         if self.verbose_var.get():
@@ -552,7 +627,7 @@ class EcoKingLauncher(ttk.Frame):
     def _validate(self) -> bool:
         wb_path = sanitize_path(self.workbook_var.get())
         required_files = [
-            ("Excel fajl", wb_path),
+            ("Master template", ROOT / "ECO KING BLANKO TABLICA.xlsx"),
             ("Mapiranje stanica", DEFAULT_STATIONS),
         ]
         if not getattr(sys, "frozen", False):
@@ -563,6 +638,9 @@ class EcoKingLauncher(ttk.Frame):
             return False
 
         try:
+            selected_date = datetime.strptime(self.selected_date_var.get().strip(), "%Y-%m-%d")
+            if selected_date.date() > datetime.now().date():
+                raise ValueError
             if self.limit_var.get().strip():
                 limit = int(self.limit_var.get().strip())
                 if limit < 1:
@@ -572,7 +650,7 @@ class EcoKingLauncher(ttk.Frame):
             int(self.chart_wait_var.get())
             int(self.search_wait_var.get())
         except ValueError:
-            messagebox.showerror("Neispravne opcije", "Provjerite unesene numeričke parametre (limit, radnici, milisekunde).")
+            messagebox.showerror("Neispravne opcije", "Provjerite datum (YYYY-MM-DD) i numeričke parametre.")
             return False
 
         return True
@@ -588,7 +666,7 @@ class EcoKingLauncher(ttk.Frame):
 
         self._clear_log()
         self._append_log("Pokretanje obračuna...\n", "success")
-        self._append_log(f"Excel fajl: {short_path(self.workbook_var.get())}\n", "normal")
+        self._append_log(f"Izlazni report: {short_path(self.workbook_var.get())}\n", "normal")
         self._append_log(f"Log fajl: {short_path(self.state.log_path)}\n\n", "normal")
 
         self.state.running = True

@@ -10,14 +10,25 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_WORKBOOK = ROOT / "EcoKing - tabela potrošnje - Jul 2026. TEST.xlsx"
+DEFAULT_TEMPLATE = ROOT / "ECO KING BLANKO TABLICA.xlsx"
+
+
+def desktop_directory() -> Path:
+    candidates = [Path.home() / "Desktop"]
+    if os.environ.get("OneDrive"):
+        candidates.insert(0, Path(os.environ["OneDrive"]) / "Desktop")
+    return next((path for path in candidates if path.is_dir()), ROOT)
+
+
+def report_output_path(selected_date: str) -> Path:
+    return desktop_directory() / f"EcoKing_Report_{selected_date}.xlsx"
 DEFAULT_STATIONS = ROOT / "herceg_novi_stations.json"
 LOG_DIR = ROOT / "logs"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -76,6 +87,7 @@ def translate_log_line(line: str) -> str:
         return f"{prefix}[{idx}/{total}] Stanica={key}, Excel red={row}, Lokacija={location}, Vodomjer={meter}, pretraga={search}"
 
     replacements: list[tuple[re.Pattern[str], str]] = [
+        (re.compile(r"^REPORT GENERATED SUCCESSFULLY: (.+) for (.+) with (\d+) mapped rows$"), r"USPJEŠNO KREIRAN IZVJEŠTAJ: \1 za datum \2 sa \3 mapiranih redova"),
         (re.compile(r"^Loaded (\d+) workbook rows from (.+)$"), r"Učitano je \1 redova iz Excel fajla \2"),
         (re.compile(r"^Loaded (\d+) location mappings from (.+)$"), r"Učitano je \1 mapiranja lokacija iz \2"),
         (re.compile(r"^Built (\d+) station-driven scrape jobs from (\d+) mappings$"), r"Pripremljeno je \1 zadataka iz \2 mapiranja stanica"),
@@ -96,6 +108,7 @@ def translate_log_line(line: str) -> str:
         (re.compile(r"^Clicked interval option '(.+)'$"), r"Kliknut je interval '\1'"),
         (re.compile(r"^Clicking interval button with selector (.+)$"), r"Klik na dugme intervala preko selektora \1"),
         (re.compile(r"^Read (.+): daily=(.+) m3, max=(.+) m3, min=(.+) m3$"), r"Očitano za \1: dnevno=\2 m3, maksimum=\3 m3, minimum=\4 m3"),
+        (re.compile(r'^FOUND: MIN: (.+) MAX: (.+) DAILY: (.+) BATTERY: (.+) for "(.+)"$'), r'PRONAĐENO: MIN=\1, MAX=\2, DNEVNO=\3, BATERIJA=\4 za "\5"'),
         (re.compile(r'^FOUND: MIN: (.+) MAX: (.+) DAILY: (.+) for "(.+)"$'), r'PRONAĐENO: MIN=\1, MAX=\2, DNEVNO=\3 za "\4"'),
         (re.compile(r"^Failed to scrape station (.+) for Excel row (.+)$"), r"Neuspjelo očitavanje stanice \1 za Excel red \2"),
         (re.compile(r"^Search query (.+) failed for (.+)\. Trying fallback query\.$"), r"Pretraga \1 nije uspjela za \2. Pokušavam rezervnu pretragu."),
@@ -245,15 +258,21 @@ def choose_workbook_with_native_dialog(initial_path: Path) -> tuple[Path | None,
 
 
 def build_command(config: dict[str, object]) -> tuple[list[str], dict[str, str]]:
+    selected_date = str(config.get("selectedDate") or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
+    output_path = report_output_path(selected_date)
     cmd = [
         sys.executable,
         str(ROOT / "ecoking_daily.py"),
-        "--workbook",
-        str(config.get("workbook") or DEFAULT_WORKBOOK),
+        "--output",
+        str(output_path),
+        "--template",
+        str(DEFAULT_TEMPLATE),
         "--workers",
         str(max(1, int(config.get("workers") or 1))),
         "--slow-mo-ms",
         str(max(0, int(config.get("slowMo") or 0))),
+        "--selected-date",
+        selected_date,
     ]
     cmd.append("--headed" if bool(config.get("browserVisible")) else "--headless")
     if bool(config.get("verbose", True)):
@@ -275,7 +294,7 @@ def build_command(config: dict[str, object]) -> tuple[list[str], dict[str, str]]
 def validate_config(config: dict[str, object]) -> list[str]:
     errors: list[str] = []
     for label, key, default in [
-        ("Excel ulaz", "workbook", DEFAULT_WORKBOOK),
+        ("Master template", "template", DEFAULT_TEMPLATE),
         ("Mapiranje stanica", "stationMap", DEFAULT_STATIONS),
         ("Skripta", "script", ROOT / "ecoking_daily.py"),
     ]:
@@ -283,6 +302,9 @@ def validate_config(config: dict[str, object]) -> list[str]:
         if not path.exists():
             errors.append(f"{label} ne postoji: {path}")
     try:
+        selected_date = datetime.strptime(str(config.get("selectedDate") or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")), "%Y-%m-%d")
+        if selected_date.date() > datetime.now().date():
+            errors.append("Datum ne može biti u budućnosti.")
         if str(config.get("limit") or "").strip() and int(str(config.get("limit"))) < 1:
             errors.append("Limit mora biti pozitivan broj.")
         for key in ["workers", "slowMo", "chartWait", "searchWait"]:
@@ -562,6 +584,17 @@ HTML = r"""<!doctype html>
       gap: 8px;
       align-items: center;
     }
+    .date-picker { position: relative; display: flex; gap: 8px; align-items: center; }
+    .date-picker input { flex: 1; }
+    .calendar-popup { position: absolute; top: calc(100% + 8px); left: 0; z-index: 30; display: none; width: 280px; padding: 12px; background: white; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 14px 34px rgba(15,23,42,.2); }
+    .calendar-popup.open { display: block; }
+    .calendar-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-weight: 700; }
+    .calendar-head button { border: 0; background: transparent; padding: 4px 9px; cursor: pointer; font-size: 18px; }
+    .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; }
+    .calendar-grid span { color: var(--muted); font-size: 11px; padding: 4px 0; }
+    .calendar-grid button { border: 0; background: #f8fafc; border-radius: 6px; padding: 7px 0; cursor: pointer; }
+    .calendar-grid button:hover:not(:disabled), .calendar-grid button.selected { background: var(--accent); color: white; }
+    .calendar-grid button:disabled { color: #cbd5e1; cursor: not-allowed; }
     .modal {
       position: fixed;
       inset: 0;
@@ -636,7 +669,7 @@ HTML = r"""<!doctype html>
     </div>
     <div class="header-meta">
       <span class="pill">Upis u izabrani Excel</span>
-      <span class="pill">List: jučerašnji datum</span>
+      <span class="pill">List: izabrani datum</span>
     </div>
   </header>
   <main>
@@ -646,12 +679,14 @@ HTML = r"""<!doctype html>
           <h2>Excel fajl</h2>
           <p class="section-note">Obavezan ulaz</p>
         </div>
-        <label for="workbook">Radna tabela</label>
-        <div class="path-row">
-          <input id="workbook" type="text">
-          <button id="browse" type="button" class="secondary">File explorer</button>
+        <label for="selectedDate">Datum podataka</label>
+        <div class="date-picker">
+          <input id="selectedDate" type="text" readonly aria-label="Datum podataka">
+          <button id="dateToggle" type="button" class="secondary" aria-label="Otvori kalendar">📅</button>
+          <div id="calendarPopup" class="calendar-popup"></div>
         </div>
-        <div class="hint">Otvara sistemski file explorer. Ako Linux nema <code>zenity</code> ili <code>kdialog</code>, koristi se web locator kao fallback.</div>
+        <div class="hint">Izaberi današnji ili raniji datum. Website će koristiti sledeći dan u formatu DD/MM/YYYY.</div>
+        <div class="hint output-hint">Izlaz se automatski kreira iz master template-a kao <code>EcoKing_Report_<datum>.xlsx</code>.</div>
       </div>
       <div class="panel">
         <div class="panel-title">
@@ -744,7 +779,7 @@ HTML = r"""<!doctype html>
   </div>
   <script>
     const defaults = {
-      workbook: "__WORKBOOK__",
+      selectedDate: "__SELECTED_DATE__",
       browserVisible: true,
       openAfter: true,
       workers: 1,
@@ -753,11 +788,12 @@ HTML = r"""<!doctype html>
       searchWait: 2000,
       verbose: true
     };
-    const ids = ["workbook", "workers", "limit", "slowMo", "chartWait", "searchWait"];
+    const ids = ["workers", "limit", "slowMo", "chartWait", "searchWait"];
     for (const id of ids) if (defaults[id] !== undefined) document.getElementById(id).value = defaults[id];
     for (const id of ["browserVisible", "verbose", "keepOpen", "openAfter"]) if (defaults[id] !== undefined) document.getElementById(id).checked = defaults[id];
 
     let cursor = 0;
+    let selectedDateIso = defaults.selectedDate;
     const log = document.getElementById("log");
     const badge = document.getElementById("badge");
     const message = document.getElementById("message");
@@ -770,10 +806,49 @@ HTML = r"""<!doctype html>
     const command = document.getElementById("command");
     const toggleCommand = document.getElementById("toggleCommand");
     const openWorkbook = document.getElementById("openWorkbook");
+    const selectedDateInput = document.getElementById("selectedDate");
+    const calendarPopup = document.getElementById("calendarPopup");
+    let calendarMonth = new Date(`${selectedDateIso}T00:00:00`);
+
+    function isoDate(date) {
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    }
+    function displayDate(iso) {
+      const [year, month, day] = iso.split("-");
+      return `${day}/${month}/${year}`;
+    }
+    function renderCalendar() {
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const year = calendarMonth.getFullYear();
+      const month = calendarMonth.getMonth();
+      const firstDay = new Date(year, month, 1);
+      const offset = (firstDay.getDay() + 6) % 7;
+      const days = new Date(year, month + 1, 0).getDate();
+      const monthName = firstDay.toLocaleDateString("sr-Latn", {month: "long", year: "numeric"});
+      let html = `<div class="calendar-head"><button type="button" data-calendar-prev>‹</button><span>${monthName}</span><button type="button" data-calendar-next>›</button></div><div class="calendar-grid">`;
+      for (const label of ["Pon", "Uto", "Sri", "Čet", "Pet", "Sub", "Ned"]) html += `<span>${label}</span>`;
+      for (let i = 0; i < offset; i++) html += "<span></span>";
+      for (let day = 1; day <= days; day++) {
+        const value = isoDate(new Date(year, month, day));
+        const disabled = new Date(year, month, day) > today ? " disabled" : "";
+        const selected = value === selectedDateIso ? " selected" : "";
+        html += `<button type="button" data-date="${value}" class="${selected}"${disabled}>${day}</button>`;
+      }
+      calendarPopup.innerHTML = `${html}</div>`;
+      calendarPopup.querySelector("[data-calendar-prev]").onclick = () => { calendarMonth = new Date(year, month - 1, 1); renderCalendar(); };
+      calendarPopup.querySelector("[data-calendar-next]").onclick = () => { calendarMonth = new Date(year, month + 1, 1); renderCalendar(); };
+      calendarPopup.querySelectorAll("[data-date]").forEach(button => button.onclick = () => {
+        selectedDateIso = button.dataset.date;
+        selectedDateInput.value = displayDate(selectedDateIso);
+        calendarPopup.classList.remove("open");
+      });
+    }
+    selectedDateInput.value = displayDate(selectedDateIso);
+    document.getElementById("dateToggle").addEventListener("click", () => { renderCalendar(); calendarPopup.classList.toggle("open"); });
 
     function config() {
       return {
-        workbook: document.getElementById("workbook").value,
+        selectedDate: selectedDateIso,
         workers: Number(document.getElementById("workers").value || 1),
         limit: document.getElementById("limit").value,
         slowMo: Number(document.getElementById("slowMo").value || 0),
@@ -840,7 +915,6 @@ HTML = r"""<!doctype html>
       if (!response.ok) message.textContent = payload.error || "Excel nije otvoren.";
       poll();
     });
-    document.getElementById("browse").addEventListener("click", chooseWorkbook);
     document.getElementById("closeDialog").addEventListener("click", () => document.getElementById("fileModal").classList.remove("open"));
 
     async function chooseWorkbook() {
@@ -932,7 +1006,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             html = (
-                HTML.replace("__WORKBOOK__", str(DEFAULT_WORKBOOK))
+                HTML
+                .replace("__SELECTED_DATE__", (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
+                .replace("__TODAY__", datetime.now().strftime("%Y-%m-%d"))
             )
             body = html.encode("utf-8")
             self.send_response(200)
@@ -1010,12 +1086,14 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.running = True
 
             cmd, env = build_command(config)
-            workbook_path = Path(str(config.get("workbook") or DEFAULT_WORKBOOK))
+            selected_date = str(config.get("selectedDate") or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
+            workbook_path = report_output_path(selected_date)
             open_after = bool(config.get("openAfter", True))
             append_log("Pokretanje obračuna.")
             append_log(f"Log fajl: {short_path(STATE.log_path)}")
-            append_log(f"Excel fajl: {short_path(workbook_path)}")
-            append_log("Upis: direktno u isti Excel fajl, list za jučerašnji datum.")
+            append_log(f"Izlazni Excel fajl: {short_path(workbook_path)}")
+            append_log(f"Master template: {short_path(DEFAULT_TEMPLATE)}")
+            append_log(f"Generisanje izvještaja za datum {selected_date}.")
             thread = threading.Thread(target=run_process, args=(cmd, env, workbook_path, open_after), daemon=True)
             thread.start()
             display = " ".join(f'"{part}"' if " " in part else part for part in cmd)
@@ -1039,7 +1117,8 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0") or 0)
             body = self.rfile.read(length).decode("utf-8") if length else "{}"
             config = json.loads(body or "{}")
-            workbook_path = Path(str(config.get("workbook") or DEFAULT_WORKBOOK))
+            selected_date = str(config.get("selectedDate") or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
+            workbook_path = report_output_path(selected_date)
             LOG_DIR.mkdir(exist_ok=True)
             with STATE_LOCK:
                 if STATE.log_path is None:
@@ -1055,12 +1134,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0") or 0)
             body = self.rfile.read(length).decode("utf-8") if length else "{}"
             config = json.loads(body or "{}")
-            workbook_path = Path(str(config.get("workbook") or DEFAULT_WORKBOOK))
-            selected, error = choose_workbook_with_native_dialog(workbook_path)
-            if selected:
-                self.send_json({"path": str(selected)})
-            else:
-                self.send_json({"error": error or "Fajl nije izabran."}, status=503)
+            self.send_json({"error": "Izbor ulaznog Excel fajla više nije potreban; koristi se master template."}, status=410)
             return
 
         self.send_error(404)

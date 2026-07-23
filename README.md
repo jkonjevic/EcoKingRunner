@@ -6,7 +6,7 @@ The production flow is:
 
 - user selects one Excel workbook
 - station mapping is loaded from `herceg_novi_stations.json` in the app folder
-- the script creates/replaces yesterday's sheet, for example `21.07.2026.`
+- the script creates/replaces the selected reporting date's sheet
 - only that sheet is replaced; other workbook sheets are left untouched
 - values are written directly back into the selected workbook
 
@@ -84,6 +84,10 @@ python ecoking_daily.py --workbook "EcoKing - tabela potrošnje - Jul 2026. TEST
 
 ## Desktop App
 
+Use `--selected-date YYYY-MM-DD` for a specific reporting date. The scraper writes that date's sheet and selects the following day in the website calendar; when omitted, it defaults to yesterday.
+
+Each run clones `ECO KING BLANKO TABLICA.xlsx` into the requested output path, preserves the template's styles/formulas, and maps results using the JSON station key plus the Excel `LOKACIJA` and `VODOMJER` headers. Website dates use `DD/MM/YYYY`.
+
 The launcher provides:
 
 - one-button execution
@@ -91,7 +95,7 @@ The launcher provides:
 - worker count, limit, and wait-time options
 - file picker for the Excel workbook
 - direct write-back into the selected Excel workbook
-- automatic yesterday sheet creation, replacing that sheet if it already exists
+- automatic selected-date sheet creation, replacing that sheet if it already exists
 - station mapping loaded from `herceg_novi_stations.json` beside the app
 - live Serbian ijekavica logs
 - timestamped log files under `logs/`

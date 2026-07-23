@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 import unicodedata
@@ -20,8 +21,32 @@ from playwright.sync_api import Browser, Error as PlaywrightError, Page, sync_pl
 
 
 DATE_FORMAT = "%d.%m.%Y."
-DEFAULT_WORKBOOK = "EcoKing - tabela potrošnje - Jul 2026. TEST.xlsx"
+ISO_DATE_FORMAT = "%Y-%m-%d"
+WEBSITE_DATE_FORMAT = "%d/%m/%Y"
 DEFAULT_LOCATION_MAP = "herceg_novi_stations.json"
+DEFAULT_TEMPLATE = "ECO KING BLANKO TABLICA.xlsx"
+
+
+def desktop_directory() -> Path | None:
+    candidates = [
+        Path.home() / "Desktop",
+        Path(os.environ.get("OneDrive", "")) / "Desktop" if os.environ.get("OneDrive") else None,
+    ]
+    for candidate in candidates:
+        if candidate and candidate.exists() and candidate.is_dir():
+            return candidate
+    return None
+
+
+def store_report_on_desktop(report_path: Path) -> Path:
+    desktop = desktop_directory()
+    if desktop is None:
+        logging.warning("Desktop folder was not found; keeping report at %s.", report_path)
+        return report_path
+    destination = desktop / report_path.name
+    if report_path.resolve() != destination.resolve():
+        shutil.copy2(report_path, destination)
+    return destination
 
 
 @dataclass(frozen=True)
@@ -29,6 +54,7 @@ class Measurement:
     daily_m3: float | None
     max_daily_m3: float | None
     min_daily_m3: float | None
+    battery_voltage: str | None = None
 
     @property
     def daily_lps(self) -> float | None:
@@ -72,7 +98,7 @@ class RunIssue:
 
 @dataclass(frozen=True)
 class RunResult:
-    measurements: dict[int, Measurement]
+    measurements: dict[str, Measurement]
     successes: list[StationJob]
     failures: list[RunIssue]
     no_data: list[RunIssue]
@@ -130,6 +156,21 @@ def yesterday_date() -> datetime:
     return datetime.now() - timedelta(days=1)
 
 
+def parse_selected_date(value: str | None) -> datetime:
+    """Parse the UI/CLI date and reject future dates."""
+    if not value:
+        selected = yesterday_date()
+    else:
+        try:
+            selected = datetime.strptime(value.strip(), ISO_DATE_FORMAT)
+        except ValueError as exc:
+            raise ValueError("Selected date must use YYYY-MM-DD format.") from exc
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if selected > today:
+        raise ValueError("Selected date cannot be in the future.")
+    return selected
+
+
 def newest_date_sheet(workbook: Any) -> Any:
     dated = []
     for ws in workbook.worksheets:
@@ -154,7 +195,18 @@ def newest_date_sheet_before(workbook: Any, target_date: datetime) -> Any:
 
 def load_location_rows(workbook_path: Path) -> list[LocationRow]:
     wb = load_workbook(workbook_path, data_only=False)
-    ws = newest_date_sheet(wb)
+    ws = next(
+        (
+            candidate
+            for candidate in wb.worksheets
+            if {str(cell.value).strip().upper() for cell in candidate[1] if cell.value}
+            >= {"LOKACIJA", "VODOMJER"}
+        ),
+        None,
+    )
+    if ws is None:
+        wb.close()
+        raise RuntimeError("Could not find a worksheet containing LOKACIJA and VODOMJER headers.")
     header_by_col = {}
     for cell in ws[1]:
         if cell.value:
@@ -183,59 +235,67 @@ def load_location_rows(workbook_path: Path) -> list[LocationRow]:
     return rows
 
 
-def duplicate_daily_sheet(
-    workbook_path: Path,
-    target_date: datetime,
-    measurements: dict[int, Measurement],
-    replace_existing_sheet: bool = True,
-    clear_existing_values: bool = True,
-    clear_new_sheet_values: bool = True,
+def clone_and_populate_template(
+    template_path: Path,
+    output_path: Path,
+    selected_date: datetime,
+    location_map: dict[str, str],
+    measurements: dict[str, Measurement],
 ) -> Path:
-    wb = load_workbook(workbook_path)
-    title = target_date.strftime(DATE_FORMAT)
-    if title in wb.sheetnames and replace_existing_sheet:
-        existing = wb[title]
-        logging.info("Sheet %s already exists. Replacing only that sheet.", title)
-        wb.remove(existing)
+    """Clone the master workbook, then map results by JSON key + Excel identity columns."""
+    if template_path.resolve() == output_path.resolve():
+        raise RuntimeError("Output workbook must be different from ECO KING BLANKO TABLICA.xlsx.")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(template_path, output_path)
 
-    created_sheet = False
-    if title in wb.sheetnames:
-        ws = wb[title]
-        logging.info("Sheet %s already exists. Updating only scraped rows.", title)
-    else:
-        template = newest_date_sheet_before(wb, target_date)
-        ws = wb.copy_worksheet(template)
-        ws.title = title
-        ws["N1"] = f"DATUM: {title}"
-        created_sheet = True
+    wb = load_workbook(output_path, data_only=False)
+    ws = next(
+        (
+            candidate
+            for candidate in wb.worksheets
+            if {str(cell.value).strip().upper() for cell in candidate[1] if cell.value}
+            >= {"LOKACIJA", "VODOMJER"}
+        ),
+        None,
+    )
+    if ws is None:
+        wb.close()
+        raise RuntimeError("Template is missing LOKACIJA and VODOMJER headers.")
 
-        # Match the source workbook convention: newest sheet first.
-        wb._sheets.remove(ws)
-        wb._sheets.insert(0, ws)
+    ws.title = selected_date.strftime(ISO_DATE_FORMAT)
+    ws["N1"] = f"DATUM: {selected_date.strftime(ISO_DATE_FORMAT)}"
+    rows = load_location_rows(output_path)
+    mapped_rows = 0
+    missing_keys: list[str] = []
+    for station_key, measurement in measurements.items():
+        if station_key not in location_map:
+            logging.warning("Scraped station key %r is not present in the JSON mapping; skipping.", station_key)
+            missing_keys.append(station_key)
+            continue
+        row = exact_excel_row_for_station(station_key, rows)
+        if row is None:
+            missing_keys.append(station_key)
+            continue
+        excel_row = row.row
+        ws.cell(row=excel_row, column=6).value = measurement.daily_m3
+        ws.cell(row=excel_row, column=8).value = measurement.max_daily_m3
+        ws.cell(row=excel_row, column=10).value = measurement.min_daily_m3
+        ws.cell(row=excel_row, column=13).value = measurement.battery_voltage
+        # G/I/K formulas from the master template remain intact.
+        mapped_rows += 1
+        logging.info("Mapped JSON station %r to Excel identity row %s (%s / %s).", station_key, excel_row, row.effective_location, row.meter_type)
 
-    if (created_sheet and clear_new_sheet_values) or (not created_sheet and clear_existing_values):
-        # Keep identity columns A-E, clear all measurement/note columns, then fill F/H/J m3 values.
-        for row in range(2, ws.max_row + 1):
-            for column in range(6, ws.max_column + 1):
-                ws.cell(row=row, column=column).value = None
-
-    for row, measurement in measurements.items():
-        ws.cell(row=row, column=6).value = measurement.daily_m3
-        ws.cell(row=row, column=7).value = measurement.daily_lps
-        ws.cell(row=row, column=8).value = measurement.max_daily_m3
-        ws.cell(row=row, column=9).value = measurement.max_daily_lps
-        ws.cell(row=row, column=10).value = measurement.min_daily_m3
-        ws.cell(row=row, column=11).value = measurement.min_daily_lps
-        logging.info("INGESTED the row into EXCEL, row number %s.", row)
-
+    if missing_keys:
+        logging.warning("Could not map %s scraped JSON station key(s) into the template: %s", len(missing_keys), ", ".join(missing_keys))
     try:
         wb.calculation.fullCalcOnLoad = True
         wb.calculation.forceFullCalc = True
     except AttributeError:
         logging.debug("Workbook calculation flags are not available in this openpyxl version.")
-    wb.save(workbook_path)
+    wb.save(output_path)
     wb.close()
-    return workbook_path
+    logging.info("Generated report %s for %s with %s mapped rows.", output_path, selected_date.strftime(ISO_DATE_FORMAT), mapped_rows)
+    return output_path
 
 
 def load_location_map(path: Path | None) -> dict[str, str]:
@@ -389,7 +449,8 @@ def build_station_jobs(location_map: dict[str, str], rows: list[LocationRow]) ->
         if not valid_site_location(search_value):
             logging.warning("Skipping station %r because its search value is invalid: %r", station_key, search_value)
             continue
-        excel_row = resolve_excel_row_for_station(station_key, rows)
+        # The JSON key is the Excel identity; its - U/- I suffix supplies VODOMJER.
+        excel_row = exact_excel_row_for_station(station_key, rows)
         if not excel_row:
             logging.warning("No Excel row matched station key %r. It will not be scraped because there is nowhere to write it.", station_key)
             continue
@@ -902,6 +963,224 @@ def click_device_dropdown(page: Page) -> bool:
     )
 
 
+def select_website_date(page: Page, website_target_date: datetime) -> None:
+    """Choose the site's date (+1 day from the requested reporting date)."""
+    target_display = website_target_date.strftime(WEBSITE_DATE_FORMAT)
+    target_day = str(website_target_date.day)
+    picker_selector = env("WEBSITE_DATE_PICKER_SELECTOR")
+
+    if picker_selector:
+        if not click_first_visible(page, [picker_selector], "website date picker"):
+            logging.debug("Could not click WEBSITE_DATE_PICKER_SELECTOR; trying the inline top-right date field.")
+    else:
+        # This is the site's Angular UI Bootstrap control. Keep it ahead of
+        # positional heuristics so the hamburger/menu buttons can never win.
+        clicked = click_first_visible(
+            page,
+            [
+                "div[uib-tooltip='Choose Date...'][ng-click='chooseDate()']",
+                "[uib-tooltip='Choose Date...']",
+            ],
+            "website date picker (Choose Date...)",
+            timeout_ms=3_000,
+        )
+        if not clicked:
+            clicked = page.evaluate(
+            """
+            (() => {
+              const visible = el => {
+                const s = getComputedStyle(el), r = el.getBoundingClientRect();
+                return s.visibility !== 'hidden' && s.display !== 'none' && r.width > 0 && r.height > 0;
+              };
+              const candidates = Array.from(document.querySelectorAll('button, a, [role=button], input'))
+                .filter(visible)
+                .map(el => {
+                  const r = el.getBoundingClientRect();
+                  const text = [el.getAttribute('title'), el.getAttribute('aria-label'),
+                    el.getAttribute('data-original-title'), el.innerText, el.textContent]
+                    .filter(Boolean).join(' ');
+                  let score = /choose date/i.test(text) ? 1000 : 0;
+                  if (r.left > window.innerWidth * .65) score += 100;
+                  if (r.top < window.innerHeight * .35) score += 20;
+                  return {el, score};
+                }).filter(item => item.score > 0).sort((a, b) => b.score - a.score);
+              if (!candidates.length) return false;
+              candidates[0].el.click();
+              return true;
+            })()
+            """
+            )
+        if not clicked:
+            logging.debug("Date picker tooltip button was not directly identified; trying the inline top-right date field.")
+
+    # Some versions render the date selector inline in the top-right toolbar instead
+    # of opening a modal. The field is identifiable by its DD/MM/YYYY value.
+    def fill_inline_date_field() -> bool:
+        selector = env("WEBSITE_DATE_INPUT_SELECTOR")
+        if selector:
+            candidates = page.locator(selector)
+        else:
+            candidates = page.locator("input, [role='textbox']")
+
+        def navigate_with_adjacent_buttons(candidate: Any) -> bool:
+            try:
+                field_box = candidate.bounding_box()
+                if not field_box:
+                    return False
+                buttons: list[tuple[float, Any]] = []
+                toolbar_buttons = page.locator("button, [role='button']")
+                for button_index in range(toolbar_buttons.count()):
+                    button = toolbar_buttons.nth(button_index)
+                    if not button.is_visible(timeout=300):
+                        continue
+                    button_box = button.bounding_box()
+                    if not button_box or abs(button_box[1] - field_box[1]) > max(field_box[3], 50):
+                        continue
+                    if button_box[0] + button_box[2] <= field_box[0]:
+                        buttons.append((field_box[0] - (button_box[0] + button_box[2]), button))
+                    elif button_box[0] >= field_box[0] + field_box[2]:
+                        buttons.append((button_box[0] - (field_box[0] + field_box[2]), button))
+                left_buttons = sorted((distance, button) for distance, button in buttons if button.bounding_box()[0] < field_box[0])
+                right_buttons = sorted((distance, button) for distance, button in buttons if button.bounding_box()[0] >= field_box[0] + field_box[2])
+                previous = left_buttons[0][1] if left_buttons else None
+                following = right_buttons[0][1] if right_buttons else None
+                if not previous or not following:
+                    return False
+                for _ in range(400):
+                    value = candidate.input_value().strip()
+                    parsed = None
+                    for value_format in (WEBSITE_DATE_FORMAT, ISO_DATE_FORMAT):
+                        try:
+                            parsed = datetime.strptime(value, value_format)
+                            break
+                        except ValueError:
+                            continue
+                    if parsed is None:
+                        return False
+                    if parsed.date() == website_target_date.date():
+                        logging.info("Reached inline website date %s using toolbar navigation", target_display)
+                        return True
+                    control = previous if parsed.date() > website_target_date.date() else following
+                    control.click()
+                    page.wait_for_timeout(100)
+                return False
+            except (PlaywrightError, TypeError, ValueError):
+                return False
+
+        for index in range(candidates.count()):
+            candidate = candidates.nth(index)
+            try:
+                if not candidate.is_visible(timeout=500):
+                    continue
+                box = candidate.bounding_box()
+                value = candidate.input_value()
+                viewport_width = (page.viewport_size or {"width": 1440})["width"]
+                if not box or box[0] < viewport_width * 0.55:
+                    continue
+                if not selector and not (
+                    re.fullmatch(r"\d{2}/\d{2}/\d{4}", value.strip())
+                    or re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip())
+                ):
+                    continue
+                candidate.click(timeout=1_000)
+                try:
+                    input_type = candidate.get_attribute("type")
+                    candidate.fill(target_iso if input_type == "date" else target_display, timeout=1_000)
+                except PlaywrightError:
+                    if navigate_with_adjacent_buttons(candidate):
+                        return True
+                    page.evaluate(
+                        """([element, value]) => {
+                          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                          setter.call(element, value);
+                          element.dispatchEvent(new Event('input', {bubbles: true}));
+                          element.dispatchEvent(new Event('change', {bubbles: true}));
+                        }""",
+                        [candidate.element_handle(), target_iso if input_type == "date" else target_display],
+                    )
+                candidate.press("Enter")
+                candidate.blur()
+                logging.info("Entered inline website date %s in the top-right date control", target_display)
+                return True
+            except (PlaywrightError, TypeError, ValueError):
+                continue
+        return False
+
+    dialog_selectors = [
+        env("WEBSITE_DATE_DIALOG_SELECTOR"),
+        "[role='dialog']",
+        ".modal:visible",
+        ".ui-dialog:visible",
+        ".datepicker:visible",
+    ]
+    dialog = None
+    for selector in dialog_selectors:
+        if not selector:
+            continue
+        candidate = page.locator(selector).last
+        try:
+            candidate.wait_for(state="visible", timeout=3_000)
+            dialog = candidate
+            break
+        except PlaywrightError:
+            continue
+    if dialog is None:
+        if fill_inline_date_field():
+            return
+        raise RuntimeError("Date picker dialog did not open and no top-right DD/MM/YYYY date field was found.")
+
+    date_input_selector = env("WEBSITE_DATE_INPUT_SELECTOR")
+    if date_input_selector:
+        date_input = dialog.locator(date_input_selector).first
+        date_input.fill(target_display)
+        logging.debug("Entered website date %s using WEBSITE_DATE_INPUT_SELECTOR", target_display)
+
+    # Prefer site-specific selectors, then common Bootstrap/Angular datepicker labels.
+    prev = env("WEBSITE_DATE_PREV_SELECTOR")
+    next_ = env("WEBSITE_DATE_NEXT_SELECTOR")
+    if not prev or not next_:
+        prev = prev or "button[aria-label*='Previous'], button[title*='Previous'], button[title*='previous'], button[ng-click='move(-1)']"
+        next_ = next_ or "button[aria-label*='Next'], button[title*='Next'], button[title*='next'], button[ng-click='move(1)']"
+
+    for _ in range(120):
+        month_match = page.evaluate(
+            """() => {
+              const roots = Array.from(document.querySelectorAll('[role=dialog], .modal, .ui-dialog, .datepicker'));
+              const root = roots.find(el => { const r=el.getBoundingClientRect(), s=getComputedStyle(el); return s.display !== 'none' && r.width > 0; });
+              return root ? (root.innerText || root.textContent || '') : '';
+            }"""
+        )
+        month_text = str(month_match or "")
+        if website_target_date.strftime("%B").lower() in month_text.lower() and str(website_target_date.year) in month_text:
+            break
+        # Calendar headers vary, so use the first visible navigation control.
+        current = datetime.now().replace(day=1)
+        if website_target_date.year > current.year or (website_target_date.year == current.year and website_target_date.month > current.month):
+            if not click_first_visible(page, [next_], "next calendar month", timeout_ms=1_000):
+                raise RuntimeError("Could not navigate to the requested calendar month. Set WEBSITE_DATE_NEXT_SELECTOR.")
+        else:
+            if not click_first_visible(page, [prev], "previous calendar month", timeout_ms=1_000):
+                raise RuntimeError("Could not navigate to the requested calendar month. Set WEBSITE_DATE_PREV_SELECTOR.")
+        page.wait_for_timeout(100)
+
+    day_selector = env("WEBSITE_DATE_DAY_SELECTOR")
+    if day_selector:
+        day = dialog.locator(day_selector).filter(has_text=re.compile(rf"^{re.escape(target_day)}$")).last
+    else:
+        day = dialog.locator(f"[data-date='{target_display}'], [data-date='{website_target_date.strftime(ISO_DATE_FORMAT)}'], [data-day='{target_display}'], [data-day='{website_target_date.strftime(ISO_DATE_FORMAT)}']").first
+        if day.count() == 0:
+            day = dialog.locator("button, td, [role='gridcell']").filter(has_text=re.compile(rf"^{re.escape(target_day)}$")).last
+    try:
+        day.click(timeout=5_000)
+    except PlaywrightError as exc:
+        raise RuntimeError(f"Could not select website date {target_display}. Set WEBSITE_DATE_DAY_SELECTOR.") from exc
+
+    ok_selector = env("WEBSITE_DATE_OK_SELECTOR") or "button:has-text('OK'), button:has-text('Ok'), button:has-text('Apply')"
+    if not click_first_visible(page, [ok_selector], "calendar OK button", timeout_ms=5_000):
+        raise RuntimeError("Could not confirm the date picker selection. Set WEBSITE_DATE_OK_SELECTOR.")
+    logging.info("Selected website target date %s for reporting date %s", target_display, (website_target_date - timedelta(days=1)).strftime(ISO_DATE_FORMAT))
+
+
 def login(page: Page, base_url: str, email: str, password: str) -> None:
     logging.info("Opening %s", base_url)
     page.goto(base_url, wait_until="domcontentloaded")
@@ -955,7 +1234,7 @@ def login(page: Page, base_url: str, email: str, password: str) -> None:
     raise RuntimeError("Could not complete login. Add LOGIN_* selectors or set WAIT_FOR_LOGIN_SECONDS.")
 
 
-def select_location(page: Page, location: str) -> None:
+def select_location(page: Page, location: str, website_target_date: datetime) -> None:
     logging.info("Searching location: %s", location)
     search_selectors = [
         env("SEARCH_INPUT_SELECTOR"),
@@ -1001,6 +1280,9 @@ def select_location(page: Page, location: str) -> None:
                     raise
                 page.wait_for_timeout(500)
                 choose_single_filtered_dropdown_result(page, query)
+            # Apply the date only after this location has been searched and opened.
+            # This is repeated for every query, including fallback queries.
+            select_website_date(page, website_target_date)
             if query != location:
                 logging.info("Selected %r by fallback serial search %r", location, query)
             return
@@ -1037,6 +1319,32 @@ def wait_for_chart_data(page: Page, timeout_ms: int | None = None) -> None:
         """,
         timeout=timeout_ms,
     )
+
+
+def read_battery_voltage(page: Page, timeout_ms: int | None = None) -> str | None:
+    """Read the visible Battery level stat for the currently selected station."""
+    timeout_ms = timeout_ms or int(env("BATTERY_WAIT_MS", "5000") or "5000")
+    selector = env("BATTERY_SELECTOR") or "span[uib-tooltip='Battery level']"
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    while time.monotonic() < deadline:
+        locator = page.locator(selector)
+        for index in range(locator.count()):
+            candidate = locator.nth(index)
+            try:
+                if not candidate.is_visible(timeout=300):
+                    continue
+                text = re.sub(r"\s+", " ", candidate.inner_text()).strip()
+                match = re.search(r"(\d+(?:[.,]\d+)?)\s*V\b", text, flags=re.IGNORECASE)
+                if match:
+                    voltage = match.group(1).replace(",", ".")
+                    value = f"{voltage} V"
+                    logging.info("Read battery level: %s", value)
+                    return value
+            except PlaywrightError:
+                continue
+        page.wait_for_timeout(100)
+    logging.warning("Battery level component was not found for the selected station.")
+    return None
 
 
 def select_interval(page: Page, label: str) -> None:
@@ -1192,8 +1500,9 @@ def save_debug_artifacts(page: Page, debug_dir: Path, location: str, suffix: str
     logging.warning("Saved debug artifacts: %s.png and %s.html", stem, stem)
 
 
-def scrape_measurement(page: Page, location: str, debug_dir: Path) -> Measurement:
-    select_location(page, location)
+def scrape_measurement(page: Page, location: str, website_target_date: datetime, debug_dir: Path) -> Measurement:
+    select_location(page, location, website_target_date)
+    battery_voltage = read_battery_voltage(page)
 
     select_interval(page, env("INTERVAL_1_DAY_LABEL", "1 Day (15-minutely)") or "1 Day (15-minutely)")
     payload_1_day = extract_chart_payload(page)
@@ -1218,7 +1527,12 @@ def scrape_measurement(page: Page, location: str, debug_dir: Path) -> Measuremen
         max_daily,
         min_daily,
     )
-    return Measurement(daily_m3=daily, max_daily_m3=max_daily, min_daily_m3=min_daily)
+    return Measurement(
+        daily_m3=daily,
+        max_daily_m3=max_daily,
+        min_daily_m3=min_daily,
+        battery_voltage=battery_voltage,
+    )
 
 
 def run_browser(
@@ -1228,6 +1542,7 @@ def run_browser(
     keep_browser_open: bool,
     debug_dir: Path,
     limit: int | None,
+    website_target_date: datetime,
 ) -> RunResult:
     base_url = env("URL") or env("url")
     email = env("EMAIL") or env("GMAIL")
@@ -1236,7 +1551,7 @@ def run_browser(
         raise RuntimeError(".env must define url, email/gmail, and password.")
 
     selected_jobs = jobs[:limit] if limit else jobs
-    measurements: dict[int, Measurement] = {}
+    measurements: dict[str, Measurement] = {}
     successes: list[StationJob] = []
     failures: list[RunIssue] = []
     no_data: list[RunIssue] = []
@@ -1271,14 +1586,15 @@ def run_browser(
                             RunIssue(job.station_key, job.search_value, job.excel_row, job.excel_location, job.meter_type, "No Excel row was resolved")
                         )
                         continue
-                    measurement = scrape_measurement(page, job.search_value, debug_dir)
-                    measurements[job.excel_row] = measurement
+                    measurement = scrape_measurement(page, job.search_value, website_target_date, debug_dir)
+                    measurements[job.station_key] = measurement
                     successes.append(job)
                     logging.info(
-                        'FOUND: MIN: %s MAX: %s DAILY: %s for "%s"',
+                        'FOUND: MIN: %s MAX: %s DAILY: %s BATTERY: %s for "%s"',
                         measurement.min_daily_m3,
                         measurement.max_daily_m3,
                         measurement.daily_m3,
+                        measurement.battery_voltage,
                         job.station_key,
                     )
                 except Exception:
@@ -1311,7 +1627,7 @@ def run_browser(
 
 
 def merge_run_results(results: Iterable[RunResult]) -> RunResult:
-    measurements: dict[int, Measurement] = {}
+    measurements: dict[str, Measurement] = {}
     successes: list[StationJob] = []
     failures: list[RunIssue] = []
     no_data: list[RunIssue] = []
@@ -1338,6 +1654,7 @@ def run_browser_parallel(
     keep_browser_open: bool,
     debug_dir: Path,
     limit: int | None,
+    website_target_date: datetime,
 ) -> RunResult:
     selected_jobs = jobs[:limit] if limit else jobs
     if workers <= 1 or len(selected_jobs) <= 1:
@@ -1348,6 +1665,7 @@ def run_browser_parallel(
             keep_browser_open=keep_browser_open,
             debug_dir=debug_dir,
             limit=None,
+            website_target_date=website_target_date,
         )
 
     workers = min(workers, len(selected_jobs))
@@ -1370,6 +1688,7 @@ def run_browser_parallel(
                 keep_browser_open=keep_browser_open,
                 debug_dir=debug_dir / f"worker-{idx + 1}",
                 limit=None,
+                website_target_date=website_target_date,
             ): chunk
             for idx, chunk in enumerate(chunks)
         }
@@ -1393,14 +1712,15 @@ def log_run_report(result: RunResult) -> None:
     logging.info("========== EXECUTION REPORT ==========")
     logging.info("SUCCESSFUL: %s", len(result.successes))
     for job in result.successes:
-        measurement = result.measurements.get(job.excel_row or -1)
+        measurement = result.measurements.get(job.station_key)
         logging.info(
-            "  OK | row=%s | %s | daily=%s max=%s min=%s",
+            "  OK | row=%s | %s | daily=%s max=%s min=%s battery=%s",
             job.excel_row,
             job.station_key,
             measurement.daily_m3 if measurement else None,
             measurement.max_daily_m3 if measurement else None,
             measurement.min_daily_m3 if measurement else None,
+            measurement.battery_voltage if measurement else None,
         )
 
     logging.info("NO DATA / NO ENTRIES: %s", len(result.no_data))
@@ -1414,8 +1734,9 @@ def log_run_report(result: RunResult) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Scrape EcoKing consumption values and update yesterday's sheet in the selected Excel workbook.")
-    parser.add_argument("--workbook", default=env("WORKBOOK_PATH", DEFAULT_WORKBOOK), help="Input workbook path.")
+    parser = argparse.ArgumentParser(description="Scrape EcoKing consumption values for a selected reporting date.")
+    parser.add_argument("--output", "--workbook", dest="output", default=env("OUTPUT_PATH"), help="Standalone output workbook path. Defaults to the Desktop report.")
+    parser.add_argument("--template", default=env("TEMPLATE_PATH", DEFAULT_TEMPLATE), help="Master blank template workbook path.")
     parser.add_argument("--headless", action="store_true", help="Run browser hidden.")
     parser.add_argument("--headed", action="store_true", help="Run browser visible.")
     parser.add_argument("--slow-mo-ms", type=int, default=int(env("SLOW_MO_MS", "0") or "0"), help="Delay browser actions so clicks are visible.")
@@ -1423,6 +1744,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-browser-open", action="store_true", help="Keep headed browser open after the run.")
     parser.add_argument("--verbose", action="store_true", default=as_bool(env("VERBOSE"), default=True), help="Enable verbose logs.")
     parser.add_argument("--limit", type=int, default=None, help="Only process the first N non-empty locations.")
+    parser.add_argument("--selected-date", default=None, help="Reporting date in YYYY-MM-DD format. Defaults to yesterday.")
     return parser.parse_args()
 
 
@@ -1431,18 +1753,22 @@ def main() -> int:
     args = parse_args()
     configure_logging(args.verbose)
 
-    workbook_path = Path(args.workbook)
-    if not workbook_path.exists():
-        raise FileNotFoundError(workbook_path)
-    target_date = yesterday_date()
+    template_path = Path(args.template)
+    if not template_path.exists():
+        raise FileNotFoundError(template_path)
+    target_date = parse_selected_date(args.selected_date)
+    default_output = (desktop_directory() or Path.cwd()) / f"EcoKing_Report_{target_date.strftime(ISO_DATE_FORMAT)}.xlsx"
+    output_path = Path(args.output) if args.output else default_output
+    website_target_date = target_date + timedelta(days=1)
+    logging.info("Reporting date=%s; website target date=%s", target_date.strftime(ISO_DATE_FORMAT), website_target_date.strftime(ISO_DATE_FORMAT))
 
     headless_default = as_bool(env("HEADLESS"), default=False)
     headless = True if args.headless else False if args.headed else headless_default
     keep_browser_open = args.keep_browser_open or as_bool(env("KEEP_BROWSER_OPEN"), default=False)
     location_map = load_location_map(Path(env("LOCATION_MAP_PATH", DEFAULT_LOCATION_MAP) or DEFAULT_LOCATION_MAP))
 
-    rows = load_location_rows(workbook_path)
-    logging.info("Loaded %s workbook rows from %s", len(rows), workbook_path)
+    rows = load_location_rows(template_path)
+    logging.info("Loaded %s template identity rows from %s", len(rows), template_path)
     jobs = build_station_jobs(location_map, rows)
     logging.info("Built %s station-driven scrape jobs from %s mappings", len(jobs), len(location_map))
     result = run_browser_parallel(
@@ -1453,12 +1779,14 @@ def main() -> int:
         keep_browser_open=keep_browser_open,
         debug_dir=Path("debug"),
         limit=args.limit,
+        website_target_date=website_target_date,
     )
     measurements = result.measurements
 
-    duplicate_daily_sheet(workbook_path, target_date, measurements)
+    report_path = clone_and_populate_template(template_path, output_path, target_date, location_map, measurements)
+    report_path = store_report_on_desktop(report_path)
     log_run_report(result)
-    logging.info("Created sheet %s in %s with %s scraped rows", target_date.strftime(DATE_FORMAT), workbook_path, len(measurements))
+    logging.info("REPORT GENERATED SUCCESSFULLY: %s for %s with %s mapped rows", report_path, target_date.strftime(ISO_DATE_FORMAT), len(measurements))
     return 0
 
 
