@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('.env', '.'), ('herceg_novi_stations.json', '.')]
+datas = [('.env', '.'), ('herceg_novi_stations.json', '.'), ('ECO KING BLANKO TABLICA.xlsx', '.')]
 binaries = []
 hiddenimports = ['ecoking_daily']
 tmp_ret = collect_all('playwright')

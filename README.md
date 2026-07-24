@@ -127,7 +127,7 @@ Build on a Windows machine with the same architecture as the employee machine, u
 5. Give the employee the whole `dist\EcoKingRunner` folder.
 6. The employee runs `EcoKingRunner.exe`.
 
-The EXE folder should contain the app, Playwright runtime, bundled Chromium, `.env`, `herceg_novi_stations.json`, and the workbook.
+The EXE folder should contain the app, Playwright runtime, bundled Chromium, `.env`, `herceg_novi_stations.json`, and `ECO KING BLANKO TABLICA.xlsx`.
 
 If Windows Defender blocks the EXE, choose `More info` -> `Run anyway`, or add the folder to the allowed list after internal review.
 

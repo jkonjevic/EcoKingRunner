@@ -11,7 +11,7 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -162,13 +162,30 @@ def parse_selected_date(value: str | None) -> datetime:
         selected = yesterday_date()
     else:
         try:
-            selected = datetime.strptime(value.strip(), ISO_DATE_FORMAT)
-        except ValueError as exc:
-            raise ValueError("Selected date must use YYYY-MM-DD format.") from exc
+            selected = next(
+                datetime.strptime(value.strip(), date_format)
+                for date_format in (ISO_DATE_FORMAT, WEBSITE_DATE_FORMAT)
+                if _can_parse_date(value.strip(), date_format)
+            )
+        except StopIteration as exc:
+            raise ValueError("Selected date must use YYYY-MM-DD or DD/MM/YYYY format.") from exc
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     if selected > today:
         raise ValueError("Selected date cannot be in the future.")
     return selected
+
+
+def _can_parse_date(value: str, date_format: str) -> bool:
+    try:
+        datetime.strptime(value, date_format)
+        return True
+    except ValueError:
+        return False
+
+
+def target_dates(selected_date: datetime) -> tuple[datetime, datetime]:
+    """Return (Target_Date_Interval, Target_Date_Total)."""
+    return selected_date, selected_date + timedelta(days=1)
 
 
 def newest_date_sheet(workbook: Any) -> Any:
@@ -388,29 +405,65 @@ def score_station_key_for_row(station_key: str, row: LocationRow) -> int:
 
 def exact_excel_row_for_station(station_key: str, rows: list[LocationRow]) -> LocationRow | None:
     station_suffix = key_direction_suffix(station_key)
-    if station_suffix not in {"u", "i"}:
-        return None
-
     station_location = re.sub(r"\s+-\s+[iu]\s*$", "", station_key, flags=re.IGNORECASE).strip()
     station_location_norm = normalize_lookup(station_location)
-    required_meter = "ulaz" if station_suffix == "u" else "izlaz"
+    matches: list[tuple[int, LocationRow]] = []
 
-    matches = [
-        row
-        for row in rows
-        if normalize_lookup(row.effective_location or row.location) == station_location_norm
-        and normalize_lookup(row.meter_type or "") == required_meter
-    ]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        logging.warning(
-            "Multiple exact Excel rows match station key %r: %s. Using row %s.",
-            station_key,
-            [(row.row, row.effective_location or row.location, row.meter_type) for row in matches],
-            matches[0].row,
-        )
-        return matches[0]
+    for row in rows:
+        row_location_norm = normalize_lookup(row.effective_location or row.location)
+        if not row_location_norm:
+            continue
+
+        # Most keys contain only the Excel LOKACIJA, but descriptive keys such
+        # as "REZERVOAR BAJER 2 - IZLAZ ZA ČELA" include the VODOMJER text too.
+        if station_location_norm == row_location_norm:
+            location_score = 100
+            station_meter_norm = ""
+        elif station_location_norm.startswith(row_location_norm + " "):
+            location_score = 80
+            station_meter_norm = station_location_norm[len(row_location_norm):].strip()
+        else:
+            continue
+
+        row_meter_norm = normalize_lookup(row.meter_type or "")
+        meter_score = 0
+        if station_meter_norm:
+            if station_meter_norm == row_meter_norm:
+                meter_score = 100
+            else:
+                station_meter_tokens = lookup_tokens(station_meter_norm)
+                row_meter_tokens = lookup_tokens(row.meter_type or "")
+                overlap = station_meter_tokens & row_meter_tokens
+                if not overlap:
+                    continue
+                meter_score = 20 + (10 * len(overlap))
+        elif station_suffix:
+            # For a short key, retain the original U/I direction check.
+            row_suffix = preferred_station_suffix(row.meter_type)
+            if row_suffix != station_suffix:
+                continue
+            required_meter = "ulaz" if station_suffix == "u" else "izlaz"
+            # Prefer the plain directional row when several rows share the
+            # same LOKACIJA (for example, BAJER 2 has two ULAZ-labelled rows).
+            meter_score = 40 if row_meter_norm == required_meter else 20
+
+        # A descriptive VODOMJER match is stronger than the key's suffix. This
+        # also handles the workbook's "ULAZ REZERVOARA PODI" vs JSON's
+        # "PUNJENJE REZERVOARA PODI - I" naming difference.
+        matches.append((location_score + meter_score, row))
+
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0], reverse=True)
+    best_score = matches[0][0]
+    best = [row for score, row in matches if score == best_score]
+    if len(best) == 1:
+        return best[0]
+    logging.warning(
+        "Multiple exact Excel rows match station key %r: %s.",
+        station_key,
+        [(row.row, row.effective_location or row.location, row.meter_type) for row in best],
+    )
     return None
 
 
@@ -670,8 +723,10 @@ def type_open_dropdown_search(page: Page, selectors: Iterable[str], value: str) 
 
 
 def search_queries_for_location(location: str) -> list[str]:
+    """Prefer the stable meter ID before the human-readable site label."""
     queries: list[str] = []
-    for query in [location, *(re.findall(r"\d{8,}", location) or [])]:
+    identifiers = re.findall(r"\d{8,}", location)
+    for query in [*identifiers, location]:
         query = query.strip()
         if query and query not in queries:
             queries.append(query)
@@ -1178,7 +1233,13 @@ def select_website_date(page: Page, website_target_date: datetime) -> None:
     ok_selector = env("WEBSITE_DATE_OK_SELECTOR") or "button:has-text('OK'), button:has-text('Ok'), button:has-text('Apply')"
     if not click_first_visible(page, [ok_selector], "calendar OK button", timeout_ms=5_000):
         raise RuntimeError("Could not confirm the date picker selection. Set WEBSITE_DATE_OK_SELECTOR.")
-    logging.info("Selected website target date %s for reporting date %s", target_display, (website_target_date - timedelta(days=1)).strftime(ISO_DATE_FORMAT))
+    logging.info("Selected website date %s", target_display)
+
+
+def select_date_for_metric(page: Page, metric_name: str, target_date: datetime) -> None:
+    """Apply and log the date required by one diagram/metric."""
+    logging.info("DATE APPLY | metric=%s | website date=%s", metric_name, target_date.strftime(WEBSITE_DATE_FORMAT))
+    select_website_date(page, target_date)
 
 
 def login(page: Page, base_url: str, email: str, password: str) -> None:
@@ -1234,7 +1295,7 @@ def login(page: Page, base_url: str, email: str, password: str) -> None:
     raise RuntimeError("Could not complete login. Add LOGIN_* selectors or set WAIT_FOR_LOGIN_SECONDS.")
 
 
-def select_location(page: Page, location: str, website_target_date: datetime) -> None:
+def select_location(page: Page, location: str) -> None:
     logging.info("Searching location: %s", location)
     search_selectors = [
         env("SEARCH_INPUT_SELECTOR"),
@@ -1280,9 +1341,6 @@ def select_location(page: Page, location: str, website_target_date: datetime) ->
                     raise
                 page.wait_for_timeout(500)
                 choose_single_filtered_dropdown_result(page, query)
-            # Apply the date only after this location has been searched and opened.
-            # This is repeated for every query, including fallback queries.
-            select_website_date(page, website_target_date)
             if query != location:
                 logging.info("Selected %r by fallback serial search %r", location, query)
             return
@@ -1491,6 +1549,90 @@ def latest_value_from_payload(payload: dict[str, Any]) -> float | None:
     return None
 
 
+def chart_point_date(value: Any, target_year: int | None = None) -> date | None:
+    """Convert a chart point/category value to a calendar date when possible."""
+    if isinstance(value, (int, float)):
+        # Highcharts uses milliseconds since the Unix epoch for point.x.
+        timestamp = float(value)
+        if abs(timestamp) > 10_000_000_000:
+            timestamp /= 1000
+        try:
+            # Highcharts renders datetime-axis labels in the browser's local
+            # timezone.  Using UTC here shifts bars around midnight to the
+            # previous calendar day (e.g. the visible 24 Jul bar becomes 23
+            # Jul), so match the same local date the user sees.
+            return datetime.fromtimestamp(timestamp).date()
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if not text:
+        return None
+
+    # Prefer explicit numeric dates; chart labels commonly include a time too.
+    patterns = (
+        (r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", lambda m: (int(m.group(1)), int(m.group(2)), int(m.group(3)))),
+        (r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})", lambda m: (int(m.group(3)), int(m.group(2)), int(m.group(1)))),
+    )
+    for pattern, parts in patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return date(*parts(match))
+            except ValueError:
+                return None
+
+    # Some chart labels omit the year (for example, "23/07").  Only use this
+    # when the requested year is known, so an ambiguous label is not guessed.
+    if target_year is not None:
+        match = re.search(r"\b(\d{1,2})[-/.](\d{1,2})\b", text)
+        if match:
+            try:
+                return date(target_year, int(match.group(2)), int(match.group(1)))
+            except ValueError:
+                return None
+    return None
+
+
+def value_for_date_from_payload(payload: dict[str, Any], target_date: datetime) -> float | None:
+    """Return the bar whose chart date equals target_date, never simply the last bar."""
+    wanted = target_date.date()
+
+    for chart in payload.get("highcharts", []):
+        for series in chart.get("series", []):
+            for point in series.get("points", []):
+                value = parse_float(point.get("y"))
+                if value is None:
+                    continue
+                point_dates = {
+                    chart_point_date(point.get("x"), wanted.year),
+                    chart_point_date(point.get("category"), wanted.year),
+                    chart_point_date(point.get("name"), wanted.year),
+                }
+                if wanted in point_dates:
+                    return value
+
+    for chart in payload.get("chartjs", []):
+        labels = chart.get("labels", [])
+        for dataset in chart.get("datasets", []):
+            for index, raw in enumerate(dataset.get("data", [])):
+                value = parse_float(raw.get("y") if isinstance(raw, dict) else raw)
+                if value is None:
+                    continue
+                point_dates = {chart_point_date(labels[index], wanted.year)} if index < len(labels) else set()
+                if isinstance(raw, dict):
+                    point_dates.update({
+                        chart_point_date(raw.get("x"), wanted.year),
+                        chart_point_date(raw.get("label"), wanted.year),
+                    })
+                if wanted in point_dates:
+                    return value
+
+    return None
+
+
 def save_debug_artifacts(page: Page, debug_dir: Path, location: str, suffix: str) -> None:
     debug_dir.mkdir(parents=True, exist_ok=True)
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", location).strip("_") or "location"
@@ -1500,10 +1642,29 @@ def save_debug_artifacts(page: Page, debug_dir: Path, location: str, suffix: str
     logging.warning("Saved debug artifacts: %s.png and %s.html", stem, stem)
 
 
-def scrape_measurement(page: Page, location: str, website_target_date: datetime, debug_dir: Path) -> Measurement:
-    select_location(page, location, website_target_date)
+def scrape_measurement(
+    page: Page,
+    location: str,
+    target_date_interval: datetime,
+    target_date_total: datetime,
+    debug_dir: Path,
+) -> Measurement:
+    select_location(page, location)
     battery_voltage = read_battery_voltage(page)
 
+    # Total daily consumption comes from the 30-day diagram at Selected_Date + 1.
+    select_date_for_metric(page, "UKUPNA DNEVNA POTROŠNJA (m3) / 30-day", target_date_total)
+    select_interval(page, env("INTERVAL_30_DAYS_LABEL", "30 days") or "30 days")
+    payload_30_days = extract_chart_payload(page)
+    daily = value_for_date_from_payload(payload_30_days, target_date_total)
+    if daily is None:
+        save_debug_artifacts(page, debug_dir, location, "30days_no_selected_date")
+        raise RuntimeError(
+            f"No 30-day bar found for {target_date_total.strftime(ISO_DATE_FORMAT)} for {location!r}."
+        )
+
+    # Min/max come from the 15-minute diagram at Selected_Date (zero-day offset).
+    select_date_for_metric(page, "MIN/MAX DNEVNA POTROŠNJA (m3) / 15-minute", target_date_interval)
     select_interval(page, env("INTERVAL_1_DAY_LABEL", "1 Day (15-minutely)") or "1 Day (15-minutely)")
     payload_1_day = extract_chart_payload(page)
     values_1_day = numbers_from_chart_payload(payload_1_day)
@@ -1512,13 +1673,6 @@ def scrape_measurement(page: Page, location: str, website_target_date: datetime,
         raise RuntimeError(f"No numeric 1-day chart values found for {location!r}.")
     min_daily = min(values_1_day)
     max_daily = max(values_1_day)
-
-    select_interval(page, env("INTERVAL_30_DAYS_LABEL", "30 days") or "30 days")
-    payload_30_days = extract_chart_payload(page)
-    daily = latest_value_from_payload(payload_30_days)
-    if daily is None:
-        save_debug_artifacts(page, debug_dir, location, "30days_no_latest")
-        raise RuntimeError(f"No latest 30-day value found for {location!r}.")
 
     logging.info(
         "Read %s: daily=%s m3, max=%s m3, min=%s m3",
@@ -1542,7 +1696,8 @@ def run_browser(
     keep_browser_open: bool,
     debug_dir: Path,
     limit: int | None,
-    website_target_date: datetime,
+    target_date_interval: datetime,
+    target_date_total: datetime,
 ) -> RunResult:
     base_url = env("URL") or env("url")
     email = env("EMAIL") or env("GMAIL")
@@ -1586,7 +1741,7 @@ def run_browser(
                             RunIssue(job.station_key, job.search_value, job.excel_row, job.excel_location, job.meter_type, "No Excel row was resolved")
                         )
                         continue
-                    measurement = scrape_measurement(page, job.search_value, website_target_date, debug_dir)
+                    measurement = scrape_measurement(page, job.search_value, target_date_interval, target_date_total, debug_dir)
                     measurements[job.station_key] = measurement
                     successes.append(job)
                     logging.info(
@@ -1605,7 +1760,7 @@ def run_browser(
                     except Exception:
                         pass
                     issue = RunIssue(job.station_key, job.search_value, job.excel_row, job.excel_location, job.meter_type, reason)
-                    if "No numeric 1-day chart values" in reason or "No latest 30-day value" in reason:
+                    if "No numeric 1-day chart values" in reason or "No 30-day bar found" in reason:
                         no_data.append(issue)
                     else:
                         failures.append(issue)
@@ -1654,7 +1809,8 @@ def run_browser_parallel(
     keep_browser_open: bool,
     debug_dir: Path,
     limit: int | None,
-    website_target_date: datetime,
+    target_date_interval: datetime,
+    target_date_total: datetime,
 ) -> RunResult:
     selected_jobs = jobs[:limit] if limit else jobs
     if workers <= 1 or len(selected_jobs) <= 1:
@@ -1665,7 +1821,8 @@ def run_browser_parallel(
             keep_browser_open=keep_browser_open,
             debug_dir=debug_dir,
             limit=None,
-            website_target_date=website_target_date,
+            target_date_interval=target_date_interval,
+            target_date_total=target_date_total,
         )
 
     workers = min(workers, len(selected_jobs))
@@ -1688,7 +1845,8 @@ def run_browser_parallel(
                 keep_browser_open=keep_browser_open,
                 debug_dir=debug_dir / f"worker-{idx + 1}",
                 limit=None,
-                website_target_date=website_target_date,
+                target_date_interval=target_date_interval,
+                target_date_total=target_date_total,
             ): chunk
             for idx, chunk in enumerate(chunks)
         }
@@ -1759,8 +1917,13 @@ def main() -> int:
     target_date = parse_selected_date(args.selected_date)
     default_output = (desktop_directory() or Path.cwd()) / f"EcoKing_Report_{target_date.strftime(ISO_DATE_FORMAT)}.xlsx"
     output_path = Path(args.output) if args.output else default_output
-    website_target_date = target_date + timedelta(days=1)
-    logging.info("Reporting date=%s; website target date=%s", target_date.strftime(ISO_DATE_FORMAT), website_target_date.strftime(ISO_DATE_FORMAT))
+    target_date_interval, target_date_total = target_dates(target_date)
+    logging.info(
+        "Selected date=%s; interval target=%s; total target=%s",
+        target_date.strftime(WEBSITE_DATE_FORMAT),
+        target_date_interval.strftime(WEBSITE_DATE_FORMAT),
+        target_date_total.strftime(WEBSITE_DATE_FORMAT),
+    )
 
     headless_default = as_bool(env("HEADLESS"), default=False)
     headless = True if args.headless else False if args.headed else headless_default
@@ -1779,7 +1942,8 @@ def main() -> int:
         keep_browser_open=keep_browser_open,
         debug_dir=Path("debug"),
         limit=args.limit,
-        website_target_date=website_target_date,
+        target_date_interval=target_date_interval,
+        target_date_total=target_date_total,
     )
     measurements = result.measurements
 
