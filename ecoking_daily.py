@@ -185,7 +185,8 @@ def _can_parse_date(value: str, date_format: str) -> bool:
 
 def target_dates(selected_date: datetime) -> tuple[datetime, datetime]:
     """Return (Target_Date_Interval, Target_Date_Total)."""
-    return selected_date, selected_date + timedelta(days=1)
+    # Both diagrams use the date selected in the Python UI.
+    return selected_date, selected_date
 
 
 def newest_date_sheet(workbook: Any) -> Any:
@@ -1466,11 +1467,18 @@ def extract_chart_payload(page: Page) -> dict[str, Any]:
             for (const chart of window.Highcharts.charts.filter(Boolean)) {
               const series = (chart.series || []).map(s => ({
                 name: s.name,
+                type: s.type,
                 points: (s.points || []).map(p => ({
                   x: p.x,
                   y: p.y,
                   category: p.category,
-                  name: p.name
+                  name: p.name,
+                  // This is the date as Highcharts formats the X axis. It is
+                  // more authoritative than converting p.x in Python because
+                  // it uses the chart's own timezone configuration.
+                  date: typeof p.x === 'number' && window.Highcharts.dateFormat
+                    ? window.Highcharts.dateFormat('%Y-%m-%d', p.x)
+                    : null
                 }))
               }));
               payload.highcharts.push({series});
@@ -1600,6 +1608,7 @@ def value_for_date_from_payload(payload: dict[str, Any], target_date: datetime) 
     """Return the bar whose chart date equals target_date, never simply the last bar."""
     wanted = target_date.date()
 
+    highcharts_matches: list[tuple[int, float]] = []
     for chart in payload.get("highcharts", []):
         for series in chart.get("series", []):
             for point in series.get("points", []):
@@ -1610,9 +1619,20 @@ def value_for_date_from_payload(payload: dict[str, Any], target_date: datetime) 
                     chart_point_date(point.get("x"), wanted.year),
                     chart_point_date(point.get("category"), wanted.year),
                     chart_point_date(point.get("name"), wanted.year),
+                    chart_point_date(point.get("date"), wanted.year),
                 }
                 if wanted in point_dates:
-                    return value
+                    series_name = str(series.get("name") or "").lower()
+                    series_type = str(series.get("type") or "").lower()
+                    # Prefer the actual usage bar series when the page has
+                    # more than one Highcharts series with dated points.
+                    priority = 0 if series_type in {"column", "bar"} else 10
+                    if "usage" in series_name or "potro" in series_name or "cubic" in series_name:
+                        priority -= 1
+                    highcharts_matches.append((priority, value))
+
+    if highcharts_matches:
+        return min(highcharts_matches, key=lambda item: item[0])[1]
 
     for chart in payload.get("chartjs", []):
         labels = chart.get("labels", [])
@@ -1652,16 +1672,23 @@ def scrape_measurement(
     select_location(page, location)
     battery_voltage = read_battery_voltage(page)
 
-    # Total daily consumption comes from the 30-day diagram at Selected_Date + 1.
+    # The 30-day diagram is opened at the date selected in the Python UI and
+    # its last bar is the requested daily total.
     select_date_for_metric(page, "UKUPNA DNEVNA POTROŠNJA (m3) / 30-day", target_date_total)
     select_interval(page, env("INTERVAL_30_DAYS_LABEL", "30 days") or "30 days")
     payload_30_days = extract_chart_payload(page)
-    daily = value_for_date_from_payload(payload_30_days, target_date_total)
+    daily = latest_value_from_payload(payload_30_days)
     if daily is None:
         save_debug_artifacts(page, debug_dir, location, "30days_no_selected_date")
         raise RuntimeError(
-            f"No 30-day bar found for {target_date_total.strftime(ISO_DATE_FORMAT)} for {location!r}."
+            f"No latest 30-day bar found for UI-selected date {target_date_total.strftime(ISO_DATE_FORMAT)} for {location!r}."
         )
+    logging.info(
+        "30-day last bar | UI date=%s | website date=%s | Y-axis value=%s m3",
+        target_date_total.strftime(ISO_DATE_FORMAT),
+        target_date_total.strftime(ISO_DATE_FORMAT),
+        daily,
+    )
 
     # Min/max come from the 15-minute diagram at Selected_Date (zero-day offset).
     select_date_for_metric(page, "MIN/MAX DNEVNA POTROŠNJA (m3) / 15-minute", target_date_interval)

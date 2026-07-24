@@ -84,7 +84,7 @@ python ecoking_daily.py --workbook "EcoKing - tabela potrošnje - Jul 2026. TEST
 
 ## Desktop App
 
-Use `--selected-date YYYY-MM-DD` for a specific reporting date. The scraper writes that date's sheet and selects the following day in the website calendar; when omitted, it defaults to yesterday.
+Use `--selected-date YYYY-MM-DD` for a specific reporting date. The scraper writes that date's sheet and selects the same date in the website calendar; when omitted, it defaults to yesterday.
 
 Each run clones `ECO KING BLANKO TABLICA.xlsx` into the requested output path, preserves the template's styles/formulas, and maps results using the JSON station key plus the Excel `LOKACIJA` and `VODOMJER` headers. Website dates use `DD/MM/YYYY`.
 
