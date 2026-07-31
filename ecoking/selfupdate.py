@@ -35,6 +35,12 @@ SYNCED_PATHS = (
     "requirements.txt",
 )
 
+#: A download missing any of these gets rejected before anything on disk is
+#: touched. Without this check, a stale or partial branch snapshot could
+#: overwrite the running app's own ecoking/selfupdate.py with a copy that
+#: predates its existence, breaking every future update, not just this one.
+REQUIRED_FILES = ("ecoking/selfupdate.py", "ecoking/webapp.py", "ecoking_daily.py")
+
 
 def archive_url(owner: str, repo: str, branch: str) -> str:
     return f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"
@@ -62,6 +68,7 @@ def sync_from_github(
                 archive.extractall(extract_dir)
             # GitHub's zip wraps everything in a single "<repo>-<branch>/" folder.
             source_root = next(extract_dir.iterdir())
+            _verify_download_is_safe(source_root)
             apply_update(source_root, root, synced_paths)
         logging.info("Updated application code from %s/%s@%s.", owner, repo, branch)
         return True
@@ -74,6 +81,12 @@ def _download(url: str, destination: Path) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "EcoKingRunner-selfupdate"})
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
         destination.write_bytes(response.read())
+
+
+def _verify_download_is_safe(source_root: Path) -> None:
+    missing = [path for path in REQUIRED_FILES if not (source_root / path).exists()]
+    if missing:
+        raise RuntimeError(f"Downloaded update is missing required file(s): {missing}")
 
 
 def apply_update(source_root: Path, root: Path, synced_paths: tuple[str, ...] = SYNCED_PATHS) -> list[str]:

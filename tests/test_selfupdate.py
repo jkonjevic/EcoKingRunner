@@ -74,18 +74,44 @@ class SyncFromGithubTests(unittest.TestCase):
             root = Path(tmp) / "installed"
             root.mkdir()
 
-            def fake_download(url: str, destination: Path) -> None:
-                with zipfile.ZipFile(destination, "w") as archive:
-                    archive.writestr("EcoKingRunner-main/ecoking_daily.py", "# from github")
-
-            with patch.object(selfupdate, "_download", side_effect=fake_download):
+            with patch.object(selfupdate, "_download", side_effect=_fake_complete_download):
                 result = selfupdate.sync_from_github(root, synced_paths=("ecoking_daily.py",))
 
         self.assertTrue(result)
 
+    def test_a_download_missing_a_required_file_is_rejected_untouched(self) -> None:
+        """Regression test: this exact scenario deleted a live install's own
+        ecoking/selfupdate.py by syncing in a snapshot from before that file
+        existed, bricking every update after it -- not just this one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "installed"
+            (root / "ecoking").mkdir(parents=True)
+            (root / "ecoking" / "selfupdate.py").write_text("# the running version", encoding="utf-8")
+
+            def fake_download_missing_selfupdate(url: str, destination: Path) -> None:
+                with zipfile.ZipFile(destination, "w") as archive:
+                    archive.writestr("EcoKingRunner-main/ecoking/webapp.py", "# newer webapp")
+                    archive.writestr("EcoKingRunner-main/ecoking_daily.py", "# newer scraper")
+                    # No ecoking/selfupdate.py in this snapshot.
+
+            with patch.object(selfupdate, "_download", side_effect=fake_download_missing_selfupdate):
+                result = selfupdate.sync_from_github(root)
+
+            self.assertFalse(result)
+            self.assertEqual(
+                (root / "ecoking" / "selfupdate.py").read_text(encoding="utf-8"), "# the running version"
+            )
+
     def test_archive_url_targets_the_requested_branch(self) -> None:
         url = selfupdate.archive_url("jkonjevic", "EcoKingRunner", "main")
         self.assertEqual(url, "https://github.com/jkonjevic/EcoKingRunner/archive/refs/heads/main.zip")
+
+
+def _fake_complete_download(url: str, destination: Path) -> None:
+    with zipfile.ZipFile(destination, "w") as archive:
+        archive.writestr("EcoKingRunner-main/ecoking/selfupdate.py", "# self")
+        archive.writestr("EcoKingRunner-main/ecoking/webapp.py", "# webapp")
+        archive.writestr("EcoKingRunner-main/ecoking_daily.py", "# from github")
 
 
 if __name__ == "__main__":
