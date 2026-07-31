@@ -1,0 +1,24 @@
+# Render Blueprint — connect this repo on render.com and Render reads this
+# file to create the service. After that, every push to main auto-redeploys;
+# no separate CI/CD workflow is needed for the deploy itself (see ci.yml for
+# tests, which run independently).
+services:
+  - name: ecoking-runner
+    type: web
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/session
+    envVars:
+      - key: url
+        sync: false
+      - key: email
+        sync: false
+      - key: password
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      - key: HEADLESS
+        value: "true"
+      - key: WORKERS
+        value: "1"

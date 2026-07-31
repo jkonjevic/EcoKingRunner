@@ -1,0 +1,290 @@
+{
+  "version": 2,
+  "stations": [
+    {
+      "lokacija": "REZERVOAR ŽVINJE",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Žvinje - U"
+    },
+    {
+      "lokacija": "ŽVINJE KARAULA",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Žvinje Karaula - U"
+    },
+    {
+      "lokacija": "REZERVOAR NJIVICE",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Njivice - U"
+    },
+    {
+      "lokacija": "REZERVOAR NJIVICE",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Njivice - I"
+    },
+    {
+      "lokacija": "REZERVOAR BANJSKI 1",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Banjski 1 - U"
+    },
+    {
+      "lokacija": "REZERVOAR BANJSKI 1",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Banjski 1 - I"
+    },
+    {
+      "lokacija": "REZERVOAR BANJSKI 2",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Banjski 2 - U"
+    },
+    {
+      "lokacija": "REZERVOAR BANJSKI 2",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Banjski 2 - I"
+    },
+    {
+      "lokacija": "REZERVOAR GOMILA",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Gomila - U"
+    },
+    {
+      "lokacija": "REZERVOAR GOMILA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Gomila - I"
+    },
+    {
+      "lokacija": "REZERVOAR SUŠĆEPAN",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Sušćepan - U"
+    },
+    {
+      "lokacija": "REZERVOAR SUŠĆEPAN",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Sušćepan - I"
+    },
+    {
+      "lokacija": "PS RATIŠEVINA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Ratiševina - I"
+    },
+    {
+      "lokacija": "REZERVOAR KANLI KULA",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Kanli Kula - U"
+    },
+    {
+      "lokacija": "REZERVOAR KANLI KULA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Kanli Kula - I"
+    },
+    {
+      "lokacija": "REZERVOAR SAVINA",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Savina - U"
+    },
+    {
+      "lokacija": "REZERVOAR SAVINA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Savina - I"
+    },
+    {
+      "lokacija": "REZERVOAR ŠPANJOLA",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Spanjola - U"
+    },
+    {
+      "lokacija": "REZERVOAR ŠPANJOLA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Spanjola - I"
+    },
+    {
+      "lokacija": "REZERVOAR BAJER 1",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Bajer 1 - U"
+    },
+    {
+      "lokacija": "REZERVOAR BAJER 1",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Bajer 1 - I"
+    },
+    {
+      "lokacija": "REZERVOAR BAJER 2",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Bajer 2 - U"
+    },
+    {
+      "lokacija": "REZERVOAR BAJER 2",
+      "vodomjer": "IZLAZ ZA ČELA",
+      "uredjaj": "Bajer 2 - I (Čela)"
+    },
+    {
+      "lokacija": "REZERVOAR BAJER 2",
+      "vodomjer": "ULAZ REZERVOARA PODI",
+      "uredjaj": "Bajer 2 - I (punjenje R Podi)"
+    },
+    {
+      "lokacija": "REZERVOAR BAJER 2",
+      "vodomjer": "IZLAZ ZA ORJENSKI BATALJON",
+      "uredjaj": "Bajer 2 - I (Orjenski bataljon)"
+    },
+    {
+      "lokacija": "REZERVOAR PODI",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Podi - U"
+    },
+    {
+      "lokacija": "REZERVOAR PODI",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "(R-PO) Podi - I"
+    },
+    {
+      "lokacija": "PODI - MM CRMNICA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Podi - I - MM Crmnica"
+    },
+    {
+      "lokacija": "PS PODI",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "(PS-PO) Podi - I"
+    },
+    {
+      "lokacija": "ZELENIKA - TUNEL",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Hotel Delfin"
+    },
+    {
+      "lokacija": "REZERVOAR TOPLA",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Topla - U"
+    },
+    {
+      "lokacija": "REZERVOAR TOPLA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Topla - I"
+    },
+    {
+      "lokacija": "HOTEL TOPLA - MAĐARI",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Hotel Topla (Mađar)"
+    },
+    {
+      "lokacija": "TOPLA - BUGARSIK",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Bugarsik"
+    },
+    {
+      "lokacija": "KOD HOTELA IGALO",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "DN200 kod hotela Igalo"
+    },
+    {
+      "lokacija": "HOTEL IBEROSTAR",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Hotel Iberostar"
+    },
+    {
+      "lokacija": "FS OPAČICA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Opačica - Nakićenovići"
+    },
+    {
+      "lokacija": "Opačica - Nakićenovići",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Opačica - Nakićenovići"
+    },
+    {
+      "lokacija": "Opačica - Radmilovići i Kuljići",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Opačica - Radmilovići i Kuljići"
+    },
+    {
+      "lokacija": "REZERVOAR KUMBOR LIJEVA KOMORA",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Rezervoar Kumbor lijeva komora - U"
+    },
+    {
+      "lokacija": "REZERVOAR KUMBOR LIJEVA KOMORA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "(R-KL) Kumbor - I"
+    },
+    {
+      "lokacija": "REZERVOAR KUMBOR DESNA KOMORA",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Rezervoar Kumbor desna komora - U"
+    },
+    {
+      "lokacija": "REZERVOAR KUMBOR DESNA KOMORA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "(R-KD) Kumbor - I"
+    },
+    {
+      "lokacija": "KUMBOR - XANADU",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Kumbor (Xanadu)"
+    },
+    {
+      "lokacija": "DIREKTNA PREMA BAOŠIĆIMA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Direktna prema Baošićima DN300"
+    },
+    {
+      "lokacija": "PORTO NOVI - ĐENOVIĆI",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Porto Novi - Đenovići"
+    },
+    {
+      "lokacija": "PORTO NOVI - AMARO",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Porto Novi - Amaro"
+    },
+    {
+      "lokacija": "PS DELI RADIVOJE",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Deli Radivoje - I"
+    },
+    {
+      "lokacija": "REZERVOAR BIJELA",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Bijela - U"
+    },
+    {
+      "lokacija": "REZERVOAR BIJELA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Bijela - I"
+    },
+    {
+      "lokacija": "BIJELA PREKO PUTA HDL LAKOVIĆ",
+      "vodomjer": "ULAZ",
+      "uredjaj": "Bijela HDL Laković"
+    },
+    {
+      "lokacija": "PS VALA",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Vala - I"
+    },
+    {
+      "lokacija": "SVETA NEĐELJA-KAMENARI",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Kamenari - Sv. Neđelja"
+    },
+    {
+      "lokacija": "HOTEL DELFIN",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Hotel Delfin"
+    },
+    {
+      "lokacija": "HOTEL PARK",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Hotel Park"
+    },
+    {
+      "lokacija": "HOTEL KUMBOR VELIKI",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Hotel Kumbor (V)"
+    },
+    {
+      "lokacija": "HOTEL KUMBOR MALI",
+      "vodomjer": "IZLAZ",
+      "uredjaj": "Hotel Kumbor (M)"
+    }
+  ]
+}

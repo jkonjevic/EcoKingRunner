@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="sr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>EcoKing — dnevni obračun</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💧</text></svg>">
+</head>
+<body>
+
+<div id="gate" class="gate" hidden>
+  <form id="loginForm" class="gate-card">
+    <div class="gate-mark">💧</div>
+    <h1>EcoKing</h1>
+    <p>Unesi lozinku za pristup.</p>
+    <input id="password" type="password" autocomplete="current-password" placeholder="Lozinka" required>
+    <button type="submit" class="btn btn-primary btn-block">Prijavi se</button>
+    <p id="loginError" class="gate-error" role="alert"></p>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">💧</span>
+      <span>
+        <strong>EcoKing</strong>
+        <small>Dnevni obračun potrošnje</small>
+      </span>
+    </div>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" role="tab" data-view="run">Obračun</button>
+      <button class="tab" role="tab" data-view="stations">Stanice</button>
+    </nav>
+
+    <div class="topbar-end">
+      <span id="modeBadge" class="chip"></span>
+      <button id="themeToggle" class="btn btn-icon" title="Svijetla / tamna tema" aria-label="Promijeni temu">◐</button>
+    </div>
+  </header>
+
+  <!-- ------------------------------------------------------------------ -->
+  <main id="view-run" class="view">
+    <section class="col-side">
+      <div class="card">
+        <h2 class="card-title">Datum izvještaja</h2>
+        <input id="selectedDate" type="date" class="input input-lg">
+        <p class="muted" id="dateHint"></p>
+
+        <div class="actions">
+          <button id="runBtn" class="btn btn-primary btn-block">Pokreni obračun</button>
+          <button id="stopBtn" class="btn btn-danger btn-block" disabled>Zaustavi</button>
+        </div>
+        <p id="runMessage" class="notice" role="status" hidden></p>
+      </div>
+
+      <details class="card">
+        <summary class="card-title">Napredna podešavanja</summary>
+        <div class="field-grid">
+          <label class="field">
+            <span>Paralelnih browsera</span>
+            <input id="workers" type="number" min="1" max="8" value="1" class="input">
+          </label>
+          <label class="field">
+            <span>Limit stanica</span>
+            <input id="limit" type="number" min="1" placeholder="sve" class="input">
+          </label>
+          <label class="field">
+            <span>Čekanje grafa (ms)</span>
+            <input id="chartWait" type="number" min="1000" step="500" value="5000" class="input">
+          </label>
+          <label class="field">
+            <span>Čekanje pretrage (ms)</span>
+            <input id="searchWait" type="number" min="500" step="500" value="2000" class="input">
+          </label>
+        </div>
+        <label class="switch" id="browserVisibleRow">
+          <input id="browserVisible" type="checkbox">
+          <span><strong>Prikaži browser</strong><small>Korisno samo kada pratiš šta automatizacija radi.</small></span>
+        </label>
+        <label class="switch">
+          <input id="verbose" type="checkbox" checked>
+          <span><strong>Detaljni logovi</strong><small>Svaki korak: izbor uređaja, intervali, očitane vrijednosti.</small></span>
+        </label>
+        <label class="switch" id="openAfterRow">
+          <input id="openAfter" type="checkbox" checked>
+          <span><strong>Otvori Excel po završetku</strong><small>Automatski otvara gotov izvještaj.</small></span>
+        </label>
+      </details>
+
+      <div class="card">
+        <h2 class="card-title">Izvještaji</h2>
+        <div id="reportList" class="report-list"></div>
+      </div>
+    </section>
+
+    <section class="col-main">
+      <div class="stats">
+        <div class="stat"><span>Status</span><strong id="statStatus">Spremno</strong></div>
+        <div class="stat"><span>Napredak</span><strong id="statProgress">0 / 0</strong></div>
+        <div class="stat"><span>Trenutna stanica</span><strong id="statCurrent" title="">—</strong></div>
+        <div class="stat"><span>Pokrenuto</span><strong id="statStarted">—</strong></div>
+      </div>
+      <div class="progress"><div id="progressBar"></div></div>
+
+      <div class="console-head">
+        <h2 class="card-title">Log izvršenja</h2>
+        <div class="console-tools">
+          <label class="mini-check"><input id="autoScroll" type="checkbox" checked> Prati kraj</label>
+          <button id="copyLog" class="btn btn-ghost btn-sm">Kopiraj</button>
+        </div>
+      </div>
+      <pre id="log" class="console" tabindex="0"></pre>
+    </section>
+  </main>
+
+  <!-- ------------------------------------------------------------------ -->
+  <main id="view-stations" class="view" hidden>
+    <section class="col-full">
+      <div class="toolbar">
+        <input id="stationSearch" type="search" class="input" placeholder="Pretraži stanice…">
+        <span class="spacer"></span>
+        <button id="addStation" class="btn">+ Dodaj stanicu</button>
+        <button id="saveStations" class="btn btn-primary" disabled>Sačuvaj</button>
+      </div>
+
+      <p id="stationMessage" class="notice" role="status" hidden></p>
+      <div id="issues" class="issues"></div>
+
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th class="col-num">#</th>
+              <th>Red u Excel tabeli (LOKACIJA / VODOMJER)</th>
+              <th>Naziv uređaja na EcoKing sajtu</th>
+              <th class="col-toggle">Aktivna</th>
+              <th class="col-actions"></th>
+            </tr>
+          </thead>
+          <tbody id="stationRows"></tbody>
+        </table>
+        <p id="emptyState" class="empty" hidden>Nema stanica koje odgovaraju pretrazi.</p>
+      </div>
+
+      <p class="muted footnote">
+        Naziv uređaja se piše bez serijskog broja i bez „Herceg Novi“ — na primjer <code>Bajer 1 - U</code>.
+        Ako dva uređaja imaju sličan naziv, dodaj prefiks iz zagrade, na primjer <code>(R-PO) Podi - I</code>.
+      </p>
+    </section>
+  </main>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

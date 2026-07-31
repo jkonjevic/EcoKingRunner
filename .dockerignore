@@ -1,0 +1,28 @@
+.git
+.github
+.gitignore
+.venv
+.env
+.env.example
+.agents
+.codex
+
+# Build outputs and run artefacts — never needed in the image.
+build/
+dist/
+debug/
+logs/
+data/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.log
+*.spec
+build_windows.bat
+
+# Desktop-only launcher.
+ecoking_launcher.py
+
+# Local report copies.
+EcoKing_Report_*.xlsx
+tmp-*.xlsx

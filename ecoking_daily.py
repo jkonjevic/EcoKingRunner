@@ -8,7 +8,6 @@ import re
 import shutil
 import sys
 import time
-import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -19,12 +18,20 @@ from dotenv import load_dotenv
 from openpyxl import load_workbook
 from playwright.sync_api import Browser, Error as PlaywrightError, Page, sync_playwright
 
+from ecoking import stations as station_registry
+from ecoking.stations import ExcelRow, Station
 
-DATE_FORMAT = "%d.%m.%Y."
+
+ROOT = Path(__file__).resolve().parent
 ISO_DATE_FORMAT = "%Y-%m-%d"
 WEBSITE_DATE_FORMAT = "%d/%m/%Y"
-DEFAULT_LOCATION_MAP = "herceg_novi_stations.json"
 DEFAULT_TEMPLATE = "ECO KING BLANKO TABLICA.xlsx"
+
+#: Report columns in the template, by header.
+COLUMN_DAILY_M3 = 6
+COLUMN_MAX_DAILY_M3 = 8
+COLUMN_MIN_DAILY_M3 = 10
+COLUMN_BATTERY = 13
 
 
 def desktop_directory() -> Path | None:
@@ -70,35 +77,30 @@ class Measurement:
 
 
 @dataclass(frozen=True)
-class LocationRow:
-    row: int
-    location: str
-    meter_type: str | None = None
-    effective_location: str | None = None
-
-
-@dataclass(frozen=True)
 class StationJob:
-    station_key: str
-    search_value: str
-    excel_row: int | None
-    excel_location: str | None
-    meter_type: str | None
+    """A station paired with the template row its values belong in."""
+
+    station: Station
+    excel_row: int
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.station.key
+
+    @property
+    def label(self) -> str:
+        return self.station.label
 
 
 @dataclass(frozen=True)
 class RunIssue:
-    station_key: str
-    search_value: str
-    excel_row: int | None
-    excel_location: str | None
-    meter_type: str | None
+    job: StationJob
     reason: str
 
 
 @dataclass(frozen=True)
 class RunResult:
-    measurements: dict[str, Measurement]
+    measurements: dict[tuple[str, str], Measurement]
     successes: list[StationJob]
     failures: list[RunIssue]
     no_data: list[RunIssue]
@@ -145,13 +147,6 @@ def configure_logging(verbose: bool) -> None:
     root.addHandler(handler)
 
 
-def parse_date_sheet_name(name: str) -> datetime | None:
-    try:
-        return datetime.strptime(name.strip(), DATE_FORMAT)
-    except ValueError:
-        return None
-
-
 def yesterday_date() -> datetime:
     return datetime.now() - timedelta(days=1)
 
@@ -189,392 +184,111 @@ def target_dates(selected_date: datetime) -> tuple[datetime, datetime]:
     return selected_date, selected_date
 
 
-def newest_date_sheet(workbook: Any) -> Any:
-    dated = []
-    for ws in workbook.worksheets:
-        parsed = parse_date_sheet_name(ws.title)
-        if parsed:
-            dated.append((parsed, ws))
-    if not dated:
-        raise RuntimeError("No date-named sheets found in workbook.")
-    return max(dated, key=lambda item: item[0])[1]
+def load_template_rows(template_path: Path) -> list[ExcelRow]:
+    return station_registry.load_excel_rows(template_path)
 
 
-def newest_date_sheet_before(workbook: Any, target_date: datetime) -> Any:
-    dated = []
-    for ws in workbook.worksheets:
-        parsed = parse_date_sheet_name(ws.title)
-        if parsed and parsed < target_date:
-            dated.append((parsed, ws))
-    if dated:
-        return max(dated, key=lambda item: item[0])[1]
-    return newest_date_sheet(workbook)
+def load_stations(path: Path | None) -> list[Station]:
+    """Read the station registry, upgrading the legacy file shape if needed."""
+    resolved = station_registry.resolve_stations_path(path, ROOT)
+    if not resolved.exists():
+        raise FileNotFoundError(
+            f"Station registry not found: {resolved}. Create it in the app or copy stations.json next to the script."
+        )
+    stations = station_registry.load_stations(resolved)
+    logging.info("Loaded %s stations from %s", len(stations), resolved)
+    return stations
 
 
-def load_location_rows(workbook_path: Path) -> list[LocationRow]:
-    wb = load_workbook(workbook_path, data_only=False)
-    ws = next(
-        (
-            candidate
-            for candidate in wb.worksheets
-            if {str(cell.value).strip().upper() for cell in candidate[1] if cell.value}
-            >= {"LOKACIJA", "VODOMJER"}
-        ),
-        None,
-    )
-    if ws is None:
-        wb.close()
-        raise RuntimeError("Could not find a worksheet containing LOKACIJA and VODOMJER headers.")
-    header_by_col = {}
-    for cell in ws[1]:
-        if cell.value:
-            header_by_col[str(cell.value).strip().upper()] = cell.column
-    location_col = header_by_col.get("LOKACIJA")
-    meter_col = header_by_col.get("VODOMJER")
-    if not location_col:
-        raise RuntimeError("Could not find LOKACIJA header in the newest sheet.")
-
-    rows: list[LocationRow] = []
-    last_location: str | None = None
-    for row in range(2, ws.max_row + 1):
-        value = ws.cell(row=row, column=location_col).value
-        location = str(value).strip() if value is not None else ""
-        if location:
-            last_location = location
-            meter_value = ws.cell(row=row, column=meter_col).value if meter_col else None
-            meter_type = str(meter_value).strip() if meter_value else None
-            rows.append(LocationRow(row=row, location=location, meter_type=meter_type, effective_location=location))
-        elif last_location:
-            meter_value = ws.cell(row=row, column=meter_col).value if meter_col else None
-            meter_type = str(meter_value).strip() if meter_value else None
-            if meter_type:
-                rows.append(LocationRow(row=row, location="", meter_type=meter_type, effective_location=last_location))
-    wb.close()
-    return rows
+def build_station_jobs(stations: Iterable[Station], rows: Iterable[ExcelRow]) -> list[StationJob]:
+    """Pair every enabled station with its template row, skipping unmatched ones."""
+    index = station_registry.index_excel_rows(rows)
+    jobs: list[StationJob] = []
+    for station in stations:
+        if not station.enabled:
+            logging.info("Station %r is disabled; skipping.", station.label)
+            continue
+        if not station.uredjaj:
+            logging.warning("Station %r has no device name; skipping.", station.label)
+            continue
+        row = index.get(station.key)
+        if row is None:
+            logging.warning(
+                "No template row for LOKACIJA=%r VODOMJER=%r; skipping %r.",
+                station.lokacija,
+                station.vodomjer,
+                station.uredjaj,
+            )
+            continue
+        jobs.append(StationJob(station=station, excel_row=row.row))
+    return jobs
 
 
 def clone_and_populate_template(
     template_path: Path,
     output_path: Path,
     selected_date: datetime,
-    location_map: dict[str, str],
-    measurements: dict[str, Measurement],
+    measurements: dict[tuple[str, str], Measurement],
+    jobs: Iterable[StationJob],
 ) -> Path:
-    """Clone the master workbook, then map results by JSON key + Excel identity columns."""
+    """Copy the master workbook and fill in the scraped values.
+
+    Only the value columns are written; the l/s formulas in G/I/K and every
+    style in the template are left untouched.
+    """
     if template_path.resolve() == output_path.resolve():
-        raise RuntimeError("Output workbook must be different from ECO KING BLANKO TABLICA.xlsx.")
+        raise RuntimeError(f"Output workbook must be different from {template_path.name}.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(template_path, output_path)
 
-    wb = load_workbook(output_path, data_only=False)
-    ws = next(
+    workbook = load_workbook(output_path, data_only=False)
+    worksheet = next(
         (
             candidate
-            for candidate in wb.worksheets
+            for candidate in workbook.worksheets
             if {str(cell.value).strip().upper() for cell in candidate[1] if cell.value}
             >= {"LOKACIJA", "VODOMJER"}
         ),
         None,
     )
-    if ws is None:
-        wb.close()
+    if worksheet is None:
+        workbook.close()
         raise RuntimeError("Template is missing LOKACIJA and VODOMJER headers.")
 
-    ws.title = selected_date.strftime(ISO_DATE_FORMAT)
-    ws["N1"] = f"DATUM: {selected_date.strftime(ISO_DATE_FORMAT)}"
-    rows = load_location_rows(output_path)
-    mapped_rows = 0
-    missing_keys: list[str] = []
-    for station_key, measurement in measurements.items():
-        if station_key not in location_map:
-            logging.warning("Scraped station key %r is not present in the JSON mapping; skipping.", station_key)
-            missing_keys.append(station_key)
-            continue
-        row = exact_excel_row_for_station(station_key, rows)
-        if row is None:
-            missing_keys.append(station_key)
-            continue
-        excel_row = row.row
-        ws.cell(row=excel_row, column=6).value = measurement.daily_m3
-        ws.cell(row=excel_row, column=8).value = measurement.max_daily_m3
-        ws.cell(row=excel_row, column=10).value = measurement.min_daily_m3
-        ws.cell(row=excel_row, column=13).value = measurement.battery_voltage
-        # G/I/K formulas from the master template remain intact.
-        mapped_rows += 1
-        logging.info("Mapped JSON station %r to Excel identity row %s (%s / %s).", station_key, excel_row, row.effective_location, row.meter_type)
+    worksheet.title = selected_date.strftime(ISO_DATE_FORMAT)
+    worksheet["N1"] = f"DATUM: {selected_date.strftime(ISO_DATE_FORMAT)}"
 
-    if missing_keys:
-        logging.warning("Could not map %s scraped JSON station key(s) into the template: %s", len(missing_keys), ", ".join(missing_keys))
+    row_by_key = {job.key: job.excel_row for job in jobs}
+    mapped = 0
+    unmapped: list[str] = []
+    for key, measurement in measurements.items():
+        excel_row = row_by_key.get(key)
+        if excel_row is None:
+            unmapped.append(" / ".join(key))
+            continue
+        worksheet.cell(row=excel_row, column=COLUMN_DAILY_M3).value = measurement.daily_m3
+        worksheet.cell(row=excel_row, column=COLUMN_MAX_DAILY_M3).value = measurement.max_daily_m3
+        worksheet.cell(row=excel_row, column=COLUMN_MIN_DAILY_M3).value = measurement.min_daily_m3
+        worksheet.cell(row=excel_row, column=COLUMN_BATTERY).value = measurement.battery_voltage
+        mapped += 1
+
+    if unmapped:
+        logging.warning("Could not place %s scraped station(s): %s", len(unmapped), ", ".join(unmapped))
     try:
-        wb.calculation.fullCalcOnLoad = True
-        wb.calculation.forceFullCalc = True
+        workbook.calculation.fullCalcOnLoad = True
+        workbook.calculation.forceFullCalc = True
     except AttributeError:
         logging.debug("Workbook calculation flags are not available in this openpyxl version.")
-    wb.save(output_path)
-    wb.close()
-    logging.info("Generated report %s for %s with %s mapped rows.", output_path, selected_date.strftime(ISO_DATE_FORMAT), mapped_rows)
+    workbook.save(output_path)
+    workbook.close()
+    logging.info(
+        "Generated report %s for %s with %s mapped rows.",
+        output_path,
+        selected_date.strftime(ISO_DATE_FORMAT),
+        mapped,
+    )
     return output_path
 
-
-def load_location_map(path: Path | None) -> dict[str, str]:
-    if not path or not path.exists():
-        logging.warning("Location map file was not found. Browser searches will use workbook LOKACIJA values.")
-        return {}
-    with path.open("r", encoding="utf-8") as fh:
-        raw = json.load(fh)
-    location_map = {str(k).strip(): str(v).strip() for k, v in raw.items() if str(k).strip()}
-    logging.info("Loaded %s location mappings from %s", len(location_map), path)
-    return location_map
-
-
-def normalize_lookup(text: str) -> str:
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = text.lower()
-    text = re.sub(r"\s+-\s+[iu]\s*$", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def strip_lookup_direction(text: str) -> str:
-    return re.sub(r"\s+[iu]$", "", normalize_lookup(text)).strip()
-
-
-def preferred_station_suffix(meter_type: str | None) -> str | None:
-    normalized = normalize_lookup(meter_type or "")
-    if normalized.startswith("ulaz"):
-        return "u"
-    if normalized.startswith("izlaz"):
-        return "i"
-    return None
-
-
-def key_direction_suffix(text: str) -> str | None:
-    match = re.search(r"\s+-\s+([iu])\s*$", text, flags=re.IGNORECASE)
-    return match.group(1).lower() if match else None
-
-
-def lookup_tokens(text: str) -> set[str]:
-    ignored = {"fs", "ps", "rezervoar", "ulaz", "izlaz"}
-    return {
-        token
-        for token in normalize_lookup(text).split()
-        if (len(token) >= 4 or token.isdigit()) and token not in ignored
-    }
-
-
-def score_station_key_for_row(station_key: str, row: LocationRow) -> int:
-    row_location = row.effective_location or row.location
-    if not row_location:
-        return 0
-
-    station_norm = normalize_lookup(station_key)
-    station_without_direction = strip_lookup_direction(station_key)
-    row_norm = normalize_lookup(row_location)
-    row_without_direction = strip_lookup_direction(row_location)
-    station_tokens = lookup_tokens(station_key)
-    row_tokens = lookup_tokens(f"{row_location} {row.meter_type or ''}")
-    meter_tokens = lookup_tokens(row.meter_type or "")
-    station_suffix = key_direction_suffix(station_key)
-    row_suffix = preferred_station_suffix(row.meter_type)
-
-    score = 0
-    if station_norm == row_norm:
-        score += 100
-    if station_without_direction == row_without_direction:
-        score += 90
-    elif row_without_direction and row_without_direction in station_without_direction:
-        score += 50
-    overlap = row_tokens & station_tokens
-    if row_tokens and row_tokens.issubset(station_tokens):
-        score += 60 + (5 * len(row_tokens))
-    elif overlap:
-        score += 15 + (10 * len(overlap))
-    meter_overlap = meter_tokens & station_tokens
-    if meter_overlap:
-        score += 30 + (10 * len(meter_overlap))
-    station_numbers = {token for token in station_tokens if token.isdigit()}
-    row_numbers = {token for token in row_tokens if token.isdigit()}
-    if station_numbers and row_numbers and not (station_numbers & row_numbers):
-        score -= 50
-    if row_suffix and station_suffix == row_suffix:
-        score += 20
-    if row_suffix and station_suffix and station_suffix != row_suffix:
-        score -= 10
-    return score
-
-
-def exact_excel_row_for_station(station_key: str, rows: list[LocationRow]) -> LocationRow | None:
-    station_suffix = key_direction_suffix(station_key)
-    station_location = re.sub(r"\s+-\s+[iu]\s*$", "", station_key, flags=re.IGNORECASE).strip()
-    station_location_norm = normalize_lookup(station_location)
-    matches: list[tuple[int, LocationRow]] = []
-
-    for row in rows:
-        row_location_norm = normalize_lookup(row.effective_location or row.location)
-        if not row_location_norm:
-            continue
-
-        # Most keys contain only the Excel LOKACIJA, but descriptive keys such
-        # as "REZERVOAR BAJER 2 - IZLAZ ZA ČELA" include the VODOMJER text too.
-        if station_location_norm == row_location_norm:
-            location_score = 100
-            station_meter_norm = ""
-        elif station_location_norm.startswith(row_location_norm + " "):
-            location_score = 80
-            station_meter_norm = station_location_norm[len(row_location_norm):].strip()
-        else:
-            continue
-
-        row_meter_norm = normalize_lookup(row.meter_type or "")
-        meter_score = 0
-        if station_meter_norm:
-            if station_meter_norm == row_meter_norm:
-                meter_score = 100
-            else:
-                station_meter_tokens = lookup_tokens(station_meter_norm)
-                row_meter_tokens = lookup_tokens(row.meter_type or "")
-                overlap = station_meter_tokens & row_meter_tokens
-                if not overlap:
-                    continue
-                meter_score = 20 + (10 * len(overlap))
-        elif station_suffix:
-            # For a short key, retain the original U/I direction check.
-            row_suffix = preferred_station_suffix(row.meter_type)
-            if row_suffix != station_suffix:
-                continue
-            required_meter = "ulaz" if station_suffix == "u" else "izlaz"
-            # Prefer the plain directional row when several rows share the
-            # same LOKACIJA (for example, BAJER 2 has two ULAZ-labelled rows).
-            meter_score = 40 if row_meter_norm == required_meter else 20
-
-        # A descriptive VODOMJER match is stronger than the key's suffix. This
-        # also handles the workbook's "ULAZ REZERVOARA PODI" vs JSON's
-        # "PUNJENJE REZERVOARA PODI - I" naming difference.
-        matches.append((location_score + meter_score, row))
-
-    if not matches:
-        return None
-    matches.sort(key=lambda item: item[0], reverse=True)
-    best_score = matches[0][0]
-    best = [row for score, row in matches if score == best_score]
-    if len(best) == 1:
-        return best[0]
-    logging.warning(
-        "Multiple exact Excel rows match station key %r: %s.",
-        station_key,
-        [(row.row, row.effective_location or row.location, row.meter_type) for row in best],
-    )
-    return None
-
-
-def resolve_excel_row_for_station(station_key: str, rows: list[LocationRow]) -> LocationRow | None:
-    exact_row = exact_excel_row_for_station(station_key, rows)
-    if exact_row:
-        logging.debug(
-            "Exact row match for %r -> row %s (%s / %s)",
-            station_key,
-            exact_row.row,
-            exact_row.effective_location or exact_row.location,
-            exact_row.meter_type,
-        )
-        return exact_row
-
-    scored = [(score_station_key_for_row(station_key, row), row) for row in rows]
-    scored = [(score, row) for score, row in scored if score > 0]
-    if not scored:
-        return None
-    scored.sort(key=lambda item: item[0], reverse=True)
-    best_score = scored[0][0]
-    tied = [row for score, row in scored if score == best_score]
-    if len(tied) > 1:
-        logging.warning(
-            "Multiple Excel rows tie for station key %r: %s. Using row %s.",
-            station_key,
-            [(row.row, row.effective_location or row.location, row.meter_type) for row in tied],
-            tied[0].row,
-        )
-    return tied[0]
-
-
-def build_station_jobs(location_map: dict[str, str], rows: list[LocationRow]) -> list[StationJob]:
-    jobs: list[StationJob] = []
-    for station_key, search_value in location_map.items():
-        if not valid_site_location(search_value):
-            logging.warning("Skipping station %r because its search value is invalid: %r", station_key, search_value)
-            continue
-        # The JSON key is the Excel identity; its - U/- I suffix supplies VODOMJER.
-        excel_row = exact_excel_row_for_station(station_key, rows)
-        if not excel_row:
-            logging.warning("No Excel row matched station key %r. It will not be scraped because there is nowhere to write it.", station_key)
-            continue
-        jobs.append(
-            StationJob(
-                station_key=station_key,
-                search_value=search_value,
-                excel_row=excel_row.row,
-                excel_location=excel_row.effective_location or excel_row.location,
-                meter_type=excel_row.meter_type,
-            )
-        )
-    return jobs
-
-
-def valid_site_location(value: str) -> bool:
-    normalized = normalize_lookup(value)
-    invalid = {"home", "device list", "devices", "logout", "login", "menu"}
-    return bool(normalized) and normalized not in invalid
-
-
-def resolve_site_location(workbook_location: str, location_map: dict[str, str], meter_type: str | None = None) -> str:
-    mapped = location_map.get(workbook_location)
-    if mapped and valid_site_location(mapped):
-        return mapped
-    if mapped:
-        logging.warning("Ignoring invalid JSON mapping for %r: %r", workbook_location, mapped)
-
-    workbook_norm = normalize_lookup(workbook_location)
-    workbook_without_direction = strip_lookup_direction(workbook_location)
-    preferred_suffix = preferred_station_suffix(meter_type)
-    workbook_tokens = lookup_tokens(workbook_location)
-    candidates: list[tuple[int, str, str]] = []
-    for key, value in location_map.items():
-        if not valid_site_location(value):
-            continue
-        key_norm = normalize_lookup(key)
-        key_without_direction = strip_lookup_direction(key)
-        key_suffix_match = re.search(r"\s+-\s+([iu])\s*$", key, flags=re.IGNORECASE)
-        key_suffix = key_suffix_match.group(1).lower() if key_suffix_match else None
-        key_tokens = lookup_tokens(key)
-
-        score = 0
-        if key_norm == workbook_norm:
-            score += 100
-        if key_without_direction == workbook_without_direction:
-            score += 90
-        if workbook_tokens and workbook_tokens.issubset(key_tokens):
-            score += 60
-        elif workbook_tokens and workbook_tokens & key_tokens:
-            score += 25
-        if preferred_suffix and key_suffix == preferred_suffix:
-            score += 15
-        if preferred_suffix and key_suffix and key_suffix != preferred_suffix:
-            score -= 10
-        if score > 0:
-            candidates.append((score, key, value))
-
-    candidates.sort(reverse=True)
-    if candidates:
-        score, key, value = candidates[0]
-        tied = [candidate_key for candidate_score, candidate_key, _ in candidates if candidate_score == score]
-        if len(tied) > 1:
-            logging.warning("Multiple JSON keys tie for %r (%s): %s. Using %r.", workbook_location, meter_type, tied, key)
-        else:
-            logging.info("Resolved %r (%s) through JSON key %r", workbook_location, meter_type, key)
-        return value
-
-    logging.warning("No non-empty JSON mapping for %r. Falling back to workbook value.", workbook_location)
-    return workbook_location
 
 
 def click_first_visible(page: Page, selectors: Iterable[str], label: str, timeout_ms: int = 10_000) -> bool:
@@ -723,165 +437,110 @@ def type_open_dropdown_search(page: Page, selectors: Iterable[str], value: str) 
     return True
 
 
-def search_queries_for_location(location: str) -> list[str]:
-    """Prefer the stable meter ID before the human-readable site label."""
-    queries: list[str] = []
-    identifiers = re.findall(r"\d{8,}", location)
-    for query in [*identifiers, location]:
-        query = query.strip()
-        if query and query not in queries:
-            queries.append(query)
-    return queries
+#: Marks the dropdown entries a read has seen, so the follow-up click targets
+#: exactly the element that produced the text -- no index bookkeeping.
+_OPTION_TAG = "ecokingOption"
+_OPTION_ATTR = "data-ecoking-option"
+
+_READ_DROPDOWN_OPTIONS_JS = """
+(tag) => {
+  const visible = el => {
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.visibility !== 'hidden'
+      && style.display !== 'none'
+      && rect.width > 0
+      && rect.height > 0;
+  };
+  const normalize = text => (text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  const skip = new Set([
+    'home', 'device list', 'devices', 'user settings',
+    'log out', 'logout', 'login', 'menu', 'settings'
+  ]);
+  const selector = ".dropdown-menu a, .dropdown-menu button, [role=listbox] [role=option], [role=option], option";
+  for (const stale of document.querySelectorAll(`[data-${tag}]`)) delete stale.dataset[tag];
+
+  const seen = new Set();
+  const options = [];
+  for (const element of document.querySelectorAll(selector)) {
+    if (!visible(element)) continue;
+    const text = (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length < 3) continue;
+    const key = normalize(text);
+    if (!key || skip.has(key) || seen.has(key)) continue;
+    if (/no\s+(results?|matches?)|not\s+found|nema\s+rezultata/i.test(text)) continue;
+    seen.add(key);
+    element.dataset[tag] = String(options.length);
+    options.push({index: options.length, text});
+  }
+  return options;
+}
+"""
 
 
-def get_dropdown_search_result_state(page: Page, search_value: str) -> dict[str, Any]:
-    state = page.evaluate(
-        """
-        (searchValue) => {
-          const normalize = text => (text || '')
-            .normalize('NFD')
-            .replace(/[\\u0300-\\u036f]/g, '')
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, ' ')
-            .trim();
-          const target = normalize(searchValue);
-          const visible = el => {
-            if (!el) return false;
-            const style = getComputedStyle(el);
-            const rect = el.getBoundingClientRect();
-            return style.visibility !== 'hidden'
-              && style.display !== 'none'
-              && rect.width > 0
-              && rect.height > 0;
-          };
-          const stationLike = text => {
-            const normalizedText = normalize(text);
-            return /\\d{8,}/.test(text)
-              && /herceg\\s+novi/i.test(text)
-              && !/\\b(home|device\\s+list|user\\s+settings|log\\s*out|menu)\\b/i.test(normalizedText);
-          };
-          const optionSelector = ".dropdown-menu a, .dropdown-menu button, [role=listbox] [role=option], [role=option], option";
-          const rawOptions = Array.from(document.querySelectorAll(optionSelector))
-            .filter(visible)
-            .map(option => {
-              const text = (option.innerText || option.textContent || '').replace(/\\s+/g, ' ').trim();
-              return {text, normalized: normalize(text)};
-            })
-            .filter(option =>
-              option.text
-              && stationLike(option.text)
-              && !/no\\s+(results?|matches?)|not\\s+found|nema\\s+rezultata/i.test(option.text)
-            );
-          const uniqueByText = (items) => {
-            const seen = new Set();
-            const unique = [];
-            for (const item of items) {
-              const key = item.normalized;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              unique.push({...item, index: unique.length});
-            }
-            return unique;
-          };
-          const options = uniqueByText(rawOptions);
-          const matches = options.filter(option =>
-            option.normalized === target
-            || option.normalized.includes(target)
-            || target.includes(option.normalized)
-          );
-          return {options, matches};
-        }
-        """,
-        search_value,
-    )
-    return dict(state or {"options": [], "matches": []})
+def read_dropdown_options(page: Page) -> list[dict[str, Any]]:
+    """Return every visible dropdown entry, tagged so it can be clicked later."""
+    options = page.evaluate(_READ_DROPDOWN_OPTIONS_JS, _OPTION_TAG)
+    return list(options or [])
 
 
-def click_dropdown_option_by_index(page: Page, index: int) -> None:
-    page.evaluate(
-        """
-        (targetIndex) => {
-          const visible = el => {
-            if (!el) return false;
-            const style = getComputedStyle(el);
-            const rect = el.getBoundingClientRect();
-            return style.visibility !== 'hidden'
-              && style.display !== 'none'
-              && rect.width > 0
-              && rect.height > 0;
-          };
-          const normalize = text => (text || '')
-            .normalize('NFD')
-            .replace(/[\\u0300-\\u036f]/g, '')
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, ' ')
-            .trim();
-          const stationLike = text => {
-            const normalizedText = normalize(text);
-            return /\\d{8,}/.test(text)
-              && /herceg\\s+novi/i.test(text)
-              && !/\\b(home|device\\s+list|user\\s+settings|log\\s*out|menu)\\b/i.test(normalizedText);
-          };
-          const optionSelector = ".dropdown-menu a, .dropdown-menu button, [role=listbox] [role=option], [role=option], option";
-          const rawOptions = Array.from(document.querySelectorAll(optionSelector))
-            .filter(visible)
-            .filter(option => stationLike((option.innerText || option.textContent || '').replace(/\\s+/g, ' ').trim()));
-          const seen = new Set();
-          const options = [];
-          for (const option of rawOptions) {
-            const key = normalize(option.innerText || option.textContent || '');
-            if (seen.has(key)) continue;
-            seen.add(key);
-            options.push(option);
-          }
-          const option = options[targetIndex];
-          if (!option) throw new Error(`Dropdown option index ${targetIndex} is no longer visible`);
-          option.click();
-        }
-        """,
-        index,
-    )
+def click_dropdown_option(page: Page, index: int) -> None:
+    page.locator(f'[{_OPTION_ATTR}="{index}"]').first.click(timeout=5_000)
 
 
-def choose_single_filtered_dropdown_result(page: Page, search_value: str, wait_ms: int | None = None) -> None:
+def wait_for_dropdown_options(page: Page, wait_ms: int | None = None) -> list[dict[str, Any]]:
     wait_ms = wait_ms if wait_ms is not None else int(env("SEARCH_RESULTS_WAIT_MS", "2000") or "2000")
     deadline = time.monotonic() + (wait_ms / 1000)
-    state: dict[str, Any] = {"options": [], "matches": []}
-
+    options: list[dict[str, Any]] = []
     while True:
-        state = get_dropdown_search_result_state(page, search_value)
-        options = state.get("options", [])
-        matches = state.get("matches", [])
-        if options or matches or time.monotonic() >= deadline:
-            break
+        options = read_dropdown_options(page)
+        if options or time.monotonic() >= deadline:
+            return options
         page.wait_for_timeout(150)
 
-    options = state.get("options", [])
-    matches = state.get("matches", [])
-    logging.debug("Filtered dropdown options for %r: %s", search_value, [item.get("text") for item in options])
 
-    if len(matches) == 1:
-        match = matches[0]
-        logging.info("Choosing dropdown result: %s", match.get("text"))
-        click_dropdown_option_by_index(page, int(match["index"]))
-        page.wait_for_timeout(250)
-        return
+def choose_device_option(page: Page, uredjaj: str, wait_ms: int | None = None) -> str:
+    """Click the dropdown entry that matches ``uredjaj`` and return its text.
 
-    if len(options) == 1:
-        option = options[0]
-        logging.info("Choosing only visible dropdown result: %s", option.get("text"))
-        click_dropdown_option_by_index(page, int(option["index"]))
-        page.wait_for_timeout(250)
-        return
-
+    Entries are ranked against the stored label after their serial number and
+    city prefix are stripped, so the registry never has to carry a serial. A tie
+    at the top means the label is not specific enough to pick a device.
+    """
+    options = wait_for_dropdown_options(page, wait_ms)
     if not options:
-        raise RuntimeError(f"No dropdown results after searching {search_value!r}.")
+        raise RuntimeError(f"No dropdown results after searching {uredjaj!r}.")
 
-    raise RuntimeError(
-        f"Expected exactly one dropdown result for {search_value!r}, got {len(options)}: "
-        f"{[item.get('text') for item in options[:10]]}"
-    )
+    scored = [
+        (station_registry.score_device_match(uredjaj, station_registry.device_label(option["text"])), option)
+        for option in options
+    ]
+    matches = [(score, option) for score, option in scored if score > 0]
+    logging.debug("Dropdown options for %r: %s", uredjaj, [option["text"] for option in options])
 
+    if not matches:
+        raise RuntimeError(
+            f"No dropdown result matches {uredjaj!r}. Visible: {[option['text'] for option in options[:10]]}"
+        )
+
+    best_score = max(score for score, _ in matches)
+    best = [option for score, option in matches if score == best_score]
+    if len(best) > 1:
+        raise RuntimeError(
+            f"Device name {uredjaj!r} matches {len(best)} devices: {[option['text'] for option in best]}. "
+            "Make the name in the station list more specific."
+        )
+
+    chosen = best[0]
+    logging.info("Choosing device: %s", chosen["text"])
+    click_dropdown_option(page, int(chosen["index"]))
+    page.wait_for_timeout(250)
+    return str(chosen["text"])
 
 def click_interval_option(page: Page, label: str) -> bool:
     clicked = page.evaluate(
@@ -1296,61 +955,81 @@ def login(page: Page, base_url: str, email: str, password: str) -> None:
     raise RuntimeError("Could not complete login. Add LOGIN_* selectors or set WAIT_FOR_LOGIN_SECONDS.")
 
 
-def select_location(page: Page, location: str) -> None:
-    logging.info("Searching location: %s", location)
-    search_selectors = [
-        env("SEARCH_INPUT_SELECTOR"),
-        ".dropdown-menu input",
-        ".dropdown-menu textarea",
-        ".dropdown-menu .form-control",
-        ".dropdown.open input",
-        ".open > .dropdown-menu input",
-        ".uib-dropdown-menu input",
-        "[role='listbox'] input",
-        ".select2-search__field",
-        ".select2-search input",
-        "input[type='search']",
-    ]
+SEARCH_INPUT_SELECTORS = [
+    ".dropdown-menu input",
+    ".dropdown-menu textarea",
+    ".dropdown-menu .form-control",
+    ".dropdown.open input",
+    ".open > .dropdown-menu input",
+    ".uib-dropdown-menu input",
+    "[role='listbox'] input",
+    ".select2-search__field",
+    ".select2-search input",
+    "input[type='search']",
+]
+
+
+def search_input_selectors() -> list[str]:
+    configured = env("SEARCH_INPUT_SELECTOR")
+    return [configured, *SEARCH_INPUT_SELECTORS] if configured else list(SEARCH_INPUT_SELECTORS)
+
+
+def open_device_dropdown(page: Page, query: str) -> None:
+    """Open the device dropdown and type ``query`` into its search box."""
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(100)
+    except PlaywrightError:
+        pass
+
+    if not click_device_dropdown(page):
+        raise RuntimeError("Could not find the blue dropdown/search button. Set SEARCH_TOGGLE_SELECTOR.")
+
+    page.wait_for_timeout(150)
+    if not query:
+        return
+
+    selectors = search_input_selectors()
     input_wait_ms = int(env("SEARCH_INPUT_WAIT_MS", "500") or "500")
+    if not fill_open_dropdown_search(page, selectors, query):
+        if not fill_first_visible(page, selectors, query, "device search", timeout_ms=input_wait_ms):
+            raise RuntimeError("Could not find the opened dropdown search input. Set SEARCH_INPUT_SELECTOR.")
+    page.wait_for_timeout(250)
+
+
+def select_device(page: Page, uredjaj: str) -> None:
+    """Search for ``uredjaj`` on the site and open its diagram page.
+
+    Each query is typed through the DOM first; if the site's filter ignores that,
+    the same query is retyped on the keyboard before giving up and falling back
+    to a shorter query.
+    """
+    logging.info("Searching device: %s", uredjaj)
+    queries = station_registry.search_queries(uredjaj)
     errors: list[str] = []
 
-    queries = search_queries_for_location(location)
     for query in queries:
         try:
+            open_device_dropdown(page, query)
             try:
-                page.keyboard.press("Escape")
-                page.wait_for_timeout(100)
-            except PlaywrightError:
-                pass
-
-            if not click_device_dropdown(page):
-                raise RuntimeError("Could not find the blue dropdown/search button. Set SEARCH_TOGGLE_SELECTOR.")
-
-            page.wait_for_timeout(150)
-            if not fill_open_dropdown_search(page, search_selectors, query):
-                if not fill_first_visible(page, search_selectors, query, "location search", timeout_ms=input_wait_ms):
-                    raise RuntimeError("Could not find the opened dropdown search input. Set SEARCH_INPUT_SELECTOR.")
-
-            page.wait_for_timeout(250)
-            try:
-                choose_single_filtered_dropdown_result(page, query)
+                choose_device_option(page, uredjaj)
             except RuntimeError as exc:
                 if "No dropdown results" not in str(exc):
                     raise
                 logging.warning("No dropdown results for %r after DOM fill. Retrying with keyboard typing.", query)
-                if not type_open_dropdown_search(page, search_selectors, query):
+                if not type_open_dropdown_search(page, search_input_selectors(), query):
                     raise
                 page.wait_for_timeout(500)
-                choose_single_filtered_dropdown_result(page, query)
-            if query != location:
-                logging.info("Selected %r by fallback serial search %r", location, query)
+                choose_device_option(page, uredjaj)
+            if query != uredjaj:
+                logging.info("Selected %r using shorter query %r", uredjaj, query)
             return
         except Exception as exc:
             errors.append(f"{query!r}: {exc}")
             if query != queries[-1]:
-                logging.warning("Search query %r failed for %r. Trying fallback query.", query, location)
+                logging.warning("Search query %r failed for %r. Trying a shorter query.", query, uredjaj)
                 continue
-            raise RuntimeError(f"Could not select location {location!r}. Attempts: {' | '.join(errors)}") from exc
+            raise RuntimeError(f"Could not select device {uredjaj!r}. Attempts: {' | '.join(errors)}") from exc
 
 
 def wait_for_chart_data(page: Page, timeout_ms: int | None = None) -> None:
@@ -1669,7 +1348,7 @@ def scrape_measurement(
     target_date_total: datetime,
     debug_dir: Path,
 ) -> Measurement:
-    select_location(page, location)
+    select_device(page, location)
     battery_voltage = read_battery_voltage(page)
 
     # The 30-day diagram is opened at the date selected in the Python UI and
@@ -1733,7 +1412,7 @@ def run_browser(
         raise RuntimeError(".env must define url, email/gmail, and password.")
 
     selected_jobs = jobs[:limit] if limit else jobs
-    measurements: dict[str, Measurement] = {}
+    measurements: dict[tuple[str, str], Measurement] = {}
     successes: list[StationJob] = []
     failures: list[RunIssue] = []
     no_data: list[RunIssue] = []
@@ -1752,24 +1431,18 @@ def run_browser(
             login(page, base_url, email, password)
             for idx, job in enumerate(selected_jobs, start=1):
                 logging.info(
-                    "[%s/%s] Station key=%r, Excel row=%s, Excel LOKACIJA=%r, VODOMJER=%r, browser search=%r",
+                    "[%s/%s] Station=%s, Excel row=%s, device=%r",
                     idx,
                     len(selected_jobs),
-                    job.station_key,
+                    job.label,
                     job.excel_row,
-                    job.excel_location,
-                    job.meter_type,
-                    job.search_value,
+                    job.station.uredjaj,
                 )
                 try:
-                    if job.excel_row is None:
-                        logging.warning("Skipping %r because no Excel row was resolved.", job.station_key)
-                        failures.append(
-                            RunIssue(job.station_key, job.search_value, job.excel_row, job.excel_location, job.meter_type, "No Excel row was resolved")
-                        )
-                        continue
-                    measurement = scrape_measurement(page, job.search_value, target_date_interval, target_date_total, debug_dir)
-                    measurements[job.station_key] = measurement
+                    measurement = scrape_measurement(
+                        page, job.station.uredjaj, target_date_interval, target_date_total, debug_dir
+                    )
+                    measurements[job.key] = measurement
                     successes.append(job)
                     logging.info(
                         'FOUND: MIN: %s MAX: %s DAILY: %s BATTERY: %s for "%s"',
@@ -1777,16 +1450,16 @@ def run_browser(
                         measurement.max_daily_m3,
                         measurement.daily_m3,
                         measurement.battery_voltage,
-                        job.station_key,
+                        job.label,
                     )
                 except Exception:
-                    logging.exception("Failed to scrape station %s for Excel row %s", job.station_key, job.excel_row)
+                    logging.exception("Failed to scrape station %s for Excel row %s", job.label, job.excel_row)
                     reason = "See traceback above"
                     try:
                         reason = str(sys.exc_info()[1])
                     except Exception:
                         pass
-                    issue = RunIssue(job.station_key, job.search_value, job.excel_row, job.excel_location, job.meter_type, reason)
+                    issue = RunIssue(job, reason)
                     if "No numeric 1-day chart values" in reason or "No 30-day bar found" in reason:
                         no_data.append(issue)
                     else:
@@ -1809,7 +1482,7 @@ def run_browser(
 
 
 def merge_run_results(results: Iterable[RunResult]) -> RunResult:
-    measurements: dict[str, Measurement] = {}
+    measurements: dict[tuple[str, str], Measurement] = {}
     successes: list[StationJob] = []
     failures: list[RunIssue] = []
     no_data: list[RunIssue] = []
@@ -1883,10 +1556,7 @@ def run_browser_parallel(
                 results.append(future.result())
             except Exception as exc:
                 logging.exception("Browser worker failed for %s job(s).", len(chunk))
-                failures = [
-                    RunIssue(job.station_key, job.search_value, job.excel_row, job.excel_location, job.meter_type, str(exc))
-                    for job in chunk
-                ]
+                failures = [RunIssue(job, str(exc)) for job in chunk]
                 results.append(RunResult(measurements={}, successes=[], failures=failures, no_data=[]))
 
     return merge_run_results(results)
@@ -1897,11 +1567,11 @@ def log_run_report(result: RunResult) -> None:
     logging.info("========== EXECUTION REPORT ==========")
     logging.info("SUCCESSFUL: %s", len(result.successes))
     for job in result.successes:
-        measurement = result.measurements.get(job.station_key)
+        measurement = result.measurements.get(job.key)
         logging.info(
             "  OK | row=%s | %s | daily=%s max=%s min=%s battery=%s",
             job.excel_row,
-            job.station_key,
+            job.label,
             measurement.daily_m3 if measurement else None,
             measurement.max_daily_m3 if measurement else None,
             measurement.min_daily_m3 if measurement else None,
@@ -1910,11 +1580,11 @@ def log_run_report(result: RunResult) -> None:
 
     logging.info("NO DATA / NO ENTRIES: %s", len(result.no_data))
     for issue in result.no_data:
-        logging.info("  NO DATA | row=%s | %s | %s", issue.excel_row, issue.station_key, issue.reason)
+        logging.info("  NO DATA | row=%s | %s | %s", issue.job.excel_row, issue.job.label, issue.reason)
 
     logging.info("FAILED: %s", len(result.failures))
     for issue in result.failures:
-        logging.info("  FAIL | row=%s | %s | %s", issue.excel_row, issue.station_key, issue.reason)
+        logging.info("  FAIL | row=%s | %s | %s", issue.job.excel_row, issue.job.label, issue.reason)
     logging.info("======================================")
 
 
@@ -1922,13 +1592,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scrape EcoKing consumption values for a selected reporting date.")
     parser.add_argument("--output", "--workbook", dest="output", default=env("OUTPUT_PATH"), help="Standalone output workbook path. Defaults to the Desktop report.")
     parser.add_argument("--template", default=env("TEMPLATE_PATH", DEFAULT_TEMPLATE), help="Master blank template workbook path.")
+    parser.add_argument("--stations", default=env("STATIONS_PATH") or env("LOCATION_MAP_PATH"), help="Station registry JSON. Defaults to stations.json beside the script.")
     parser.add_argument("--headless", action="store_true", help="Run browser hidden.")
     parser.add_argument("--headed", action="store_true", help="Run browser visible.")
     parser.add_argument("--slow-mo-ms", type=int, default=int(env("SLOW_MO_MS", "0") or "0"), help="Delay browser actions so clicks are visible.")
     parser.add_argument("--workers", type=int, default=int(env("WORKERS", "1") or "1"), help="Number of parallel browser workers. Default: 1.")
     parser.add_argument("--keep-browser-open", action="store_true", help="Keep headed browser open after the run.")
     parser.add_argument("--verbose", action="store_true", default=as_bool(env("VERBOSE"), default=True), help="Enable verbose logs.")
-    parser.add_argument("--limit", type=int, default=None, help="Only process the first N non-empty locations.")
+    parser.add_argument("--limit", type=int, default=None, help="Only process the first N stations.")
     parser.add_argument("--selected-date", default=None, help="Reporting date in YYYY-MM-DD format. Defaults to yesterday.")
     return parser.parse_args()
 
@@ -1937,6 +1608,9 @@ def main() -> int:
     load_dotenv()
     args = parse_args()
     configure_logging(args.verbose)
+
+    headless_default = as_bool(env("HEADLESS"), default=False)
+    headless = True if args.headless else False if args.headed else headless_default
 
     template_path = Path(args.template)
     if not template_path.exists():
@@ -1952,15 +1626,16 @@ def main() -> int:
         target_date_total.strftime(WEBSITE_DATE_FORMAT),
     )
 
-    headless_default = as_bool(env("HEADLESS"), default=False)
-    headless = True if args.headless else False if args.headed else headless_default
     keep_browser_open = args.keep_browser_open or as_bool(env("KEEP_BROWSER_OPEN"), default=False)
-    location_map = load_location_map(Path(env("LOCATION_MAP_PATH", DEFAULT_LOCATION_MAP) or DEFAULT_LOCATION_MAP))
 
-    rows = load_location_rows(template_path)
-    logging.info("Loaded %s template identity rows from %s", len(rows), template_path)
-    jobs = build_station_jobs(location_map, rows)
-    logging.info("Built %s station-driven scrape jobs from %s mappings", len(jobs), len(location_map))
+    stations = load_stations(args.stations)
+    rows = load_template_rows(template_path)
+    logging.info("Loaded %s workbook rows from %s", len(rows), template_path)
+    jobs = build_station_jobs(stations, rows)
+    logging.info("Built %s station jobs from %s stations", len(jobs), len(stations))
+    if not jobs:
+        raise RuntimeError("No station matched a template row. Open the station list and fix the entries.")
+
     result = run_browser_parallel(
         jobs=jobs,
         workers=max(1, args.workers),
@@ -1972,12 +1647,19 @@ def main() -> int:
         target_date_interval=target_date_interval,
         target_date_total=target_date_total,
     )
-    measurements = result.measurements
 
-    report_path = clone_and_populate_template(template_path, output_path, target_date, location_map, measurements)
-    report_path = store_report_on_desktop(report_path)
+    report_path = clone_and_populate_template(
+        template_path, output_path, target_date, result.measurements, jobs
+    )
+    if as_bool(env("COPY_REPORT_TO_DESKTOP"), default=True):
+        report_path = store_report_on_desktop(report_path)
     log_run_report(result)
-    logging.info("REPORT GENERATED SUCCESSFULLY: %s for %s with %s mapped rows", report_path, target_date.strftime(ISO_DATE_FORMAT), len(measurements))
+    logging.info(
+        "REPORT GENERATED SUCCESSFULLY: %s for %s with %s mapped rows",
+        report_path,
+        target_date.strftime(ISO_DATE_FORMAT),
+        len(result.measurements),
+    )
     return 0
 
 

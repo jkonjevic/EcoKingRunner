@@ -2,10 +2,16 @@ __pycache__/
 .venv/
 .pytest_cache/
 *.log
-tmp-*.xlsx
+
+# Secrets — never commit these.
+.env
+
+# Run artefacts
+logs/
 debug/
 build/
 dist/
-.env
-
+data/
+tmp-*.xlsx
+EcoKing_Report_*.xlsx
 EcoKing - tabela potrošnje - Jul 2026. TEST.xlsx

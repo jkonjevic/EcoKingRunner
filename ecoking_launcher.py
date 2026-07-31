@@ -13,8 +13,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# 1. Import load_dotenv
 from dotenv import load_dotenv
+
+from ecoking import logtext
+from ecoking import stations as registry
 
 APP_TITLE = "EcoKing Dnevni Obračun"
 
@@ -27,11 +29,10 @@ def app_root() -> Path:
 
 ROOT = app_root()
 
-# 2. Explicitly load the .env file next to the executable / script
+# The .env sits beside the executable / script, not in the working directory.
 load_dotenv(dotenv_path=ROOT / ".env")
 
-# Now your app can safely access environment variables
-DEFAULT_STATIONS = ROOT / "herceg_novi_stations.json"
+DEFAULT_STATIONS = registry.resolve_stations_path(None, ROOT)
 LOG_DIR = ROOT / "logs"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -185,76 +186,8 @@ def open_path(path: Path | str) -> tuple[bool, str]:
     return False, "Nije moguće automatski otvoriti fajl. " + " | ".join(errors[:3])
 
 
-def translate_log_line(line: str) -> str:
-    clean = strip_ansi(line)
-    if not clean:
-        return ""
-
-    prefix = ""
-    body = clean
-    match = re.match(r"^(\d{2}:\d{2}:\d{2})\s+([A-Z]+)\s+(.*)$", clean)
-    if match:
-        time_part, level, body = match.groups()
-        level_sr = {
-            "DEBUG": "DETALJ",
-            "INFO": "INFO",
-            "WARNING": "UPOZORENJE",
-            "ERROR": "GREŠKA",
-            "CRITICAL": "KRITIČNO",
-        }.get(level, level)
-        prefix = f"{time_part} {level_sr:<10} "
-
-    replacements: list[tuple[re.Pattern[str], str]] = [
-        (re.compile(r"^REPORT GENERATED SUCCESSFULLY: (.+) for (.+) with (\d+) mapped rows$"), r"USPJEŠNO KREIRAN IZVJEŠTAJ: \1 za datum \2 sa \3 mapiranih redova"),
-        (re.compile(r"^Loaded (\d+) workbook rows from (.+)$"), r"Učitano je \1 redova iz Excel fajla \2"),
-        (re.compile(r"^Loaded (\d+) location mappings from (.+)$"), r"Učitano je \1 mapiranja lokacija iz \2"),
-        (re.compile(r"^Built (\d+) station-driven scrape jobs from (\d+) mappings$"), r"Pripremljeno je \1 zadataka iz \2 mapiranja stanica"),
-        (re.compile(r"^Launching browser: headless=(\w+) slow_mo_ms=(\d+)$"), r"Pokrećem browser: skriven=\1, usporenje=\2 ms"),
-        (re.compile(r"^Running (\d+) jobs across (\d+) browser workers\.$"), r"Pokrećem \1 zadataka kroz \2 paralelna browser procesa."),
-        (re.compile(r"^Opening (.+)$"), r"Otvaram stranicu \1"),
-        (re.compile(r"^Login flow submitted$"), "Prijava je poslata"),
-        (re.compile(r"^Searching location: (.+)$"), r"Tražim lokaciju: \1"),
-        (re.compile(r"^Clicked device dropdown using precise top-left selector$"), "Otvoren je padajući meni za izbor uređaja"),
-        (re.compile(r"^Clicked device dropdown using top-left content heuristic$"), "Otvoren je padajući meni za izbor uređaja"),
-        (re.compile(r"^Filling location search with visible dropdown input (.+)$"), r"Unosim vrijednost u polje pretrage (\1)"),
-        (re.compile(r"^Retyped location search with keyboard into (.+)$"), r"Ponovo unosim pretragu preko tastature (\1)"),
-        (re.compile(r"^No dropdown results for (.+) after DOM fill\. Retrying with keyboard typing\.$"), r"Nema rezultata za \1 nakon prvog unosa. Pokušavam ponovo unosom preko tastature."),
-        (re.compile(r"^Filtered dropdown options for (.+): (.+)$"), r"Rezultati u padajućem meniju za \1: \2"),
-        (re.compile(r"^Choosing dropdown result: (.+)$"), r"Biranje pronađenog uređaja: \1"),
-        (re.compile(r"^Choosing only visible dropdown result: (.+)$"), r"Biranje jedinog vidljivog uređaja: \1"),
-        (re.compile(r"^Selected (.+) by fallback serial search (.+)$"), r"Lokacija \1 je izabrana preko rezervne pretrage serijskog broja \2"),
-        (re.compile(r"^Selecting interval: (.+)$"), r"Biranje intervala: \1"),
-        (re.compile(r"^Clicked interval option '(.+)'$"), r"Kliknut je interval '\1'"),
-        (re.compile(r"^Clicking interval button with selector (.+)$"), r"Klik na dugme intervala preko selektora \1"),
-        (re.compile(r"^Read (.+): daily=(.+) m3, max=(.+) m3, min=(.+) m3$"), r"Očitano za \1: dnevno=\2 m3, maksimum=\3 m3, minimum=\4 m3"),
-        (re.compile(r'^FOUND: MIN: (.+) MAX: (.+) DAILY: (.+) BATTERY: (.+) for "(.+)"$'), r'PRONAĐENO: MIN=\1, MAX=\2, DNEVNO=\3, BATERIJA=\4 za "\5"'),
-        (re.compile(r'^FOUND: MIN: (.+) MAX: (.+) DAILY: (.+) for "(.+)"$'), r'PRONAĐENO: MIN=\1, MAX=\2, DNEVNO=\3 za "\4"'),
-        (re.compile(r"^Failed to scrape station (.+) for Excel row (.+)$"), r"Neuspjelo očitavanje stanice \1 za Excel red \2"),
-        (re.compile(r"^Search query (.+) failed for (.+)\. Trying fallback query\.$"), r"Pretraga \1 nije uspjela za \2. Pokušavam rezervnu pretragu."),
-        (re.compile(r"^Saved debug artifacts: (.+)\.png and (.+)\.html$"), r"Sačuvani su debug fajlovi: \1.png i \2.html"),
-        (re.compile(r"^Updated (.+) for (.+) with (\d+) row\(s\)\.$"), r"Ažuriran je \1 za datum \2 sa \3 redova."),
-        (re.compile(r"^Created sheet (.+) in (.+) with (\d+) scraped rows$"), r"Kreiran je list \1 u fajlu \2 sa \3 očitanih redova"),
-        (re.compile(r"^========== EXECUTION REPORT ==========$"), "========== IZVJEŠTAJ IZVRŠENJA =========="),
-        (re.compile(r"^SUCCESSFUL: (\d+)$"), r"USPJEŠNO: \1"),
-        (re.compile(r"^NO DATA / NO ENTRIES: (\d+)$"), r"BEZ PODATAKA / BEZ UNOSA: \1"),
-        (re.compile(r"^FAILED: (\d+)$"), r"NEUSPJELO: \1"),
-        (re.compile(r"^======================================$"), "======================================"),
-        (re.compile(r"^Run failed: (.+)$"), r"Pokretanje nije uspjelo: \1"),
-    ]
-
-    station_match = re.match(
-        r"^\[(\d+)/(\d+)\] Station key=(.+), Excel row=(.+), Excel LOKACIJA=(.+), VODOMJER=(.+), browser search=(.+)$",
-        body,
-    )
-    if station_match:
-        idx, total, key, row, location, meter, search = station_match.groups()
-        return f"{prefix}[{idx}/{total}] Stanica={key}, Excel red={row}, Lokacija={location}, Vodomjer={meter}, pretraga={search}"
-
-    for pattern, replacement in replacements:
-        if pattern.search(body):
-            return prefix + pattern.sub(replacement, body)
-
-    return prefix + body
+# Log translation is shared with the web UI; see ecoking/logtext.py.
+translate_log_line = logtext.translate
 
 
 class EcoKingLauncher(ttk.Frame):
@@ -596,6 +529,7 @@ class EcoKingLauncher(ttk.Frame):
         cmd.extend([
             "--output", str(sanitize_path(self.workbook_var.get())),
             "--template", str(ROOT / "ECO KING BLANKO TABLICA.xlsx"),
+            "--stations", str(DEFAULT_STATIONS),
             "--workers", str(max(1, int(self.workers_var.get()))),
             "--slow-mo-ms", str(max(0, int(self.slowmo_var.get()))),
             "--selected-date", self.selected_date_var.get().strip(),
@@ -610,7 +544,7 @@ class EcoKingLauncher(ttk.Frame):
 
         env = os.environ.copy()
         env["NO_COLOR"] = "1"
-        env["LOCATION_MAP_PATH"] = str(DEFAULT_STATIONS)
+        env["STATIONS_PATH"] = str(DEFAULT_STATIONS)
         env["CHART_WAIT_MS"] = str(max(1000, int(self.chart_wait_var.get())))
         env["SEARCH_RESULTS_WAIT_MS"] = str(max(500, int(self.search_wait_var.get())))
         env["PYTHONIOENCODING"] = "utf-8"

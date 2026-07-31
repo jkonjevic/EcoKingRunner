@@ -21,15 +21,16 @@ python -m playwright install chromium
 pyinstaller --noconfirm --clean --onedir --windowed ^
     --name EcoKingRunner ^
     --add-data ".env;." ^
-    --add-data "herceg_novi_stations.json;." ^
+    --add-data "stations.json;." ^
     --add-data "ECO KING BLANKO TABLICA.xlsx;." ^
     --hidden-import ecoking_daily ^
+    --collect-submodules ecoking ^
     --collect-all playwright ^
     ecoking_launcher.py
 
 :: Backup step: Ensure runtime data files are explicitly copied into dist\EcoKingRunner
 if exist ".env" copy /Y ".env" "dist\EcoKingRunner\.env"
-if exist "herceg_novi_stations.json" copy /Y "herceg_novi_stations.json" "dist\EcoKingRunner\herceg_novi_stations.json"
+if exist "stations.json" copy /Y "stations.json" "dist\EcoKingRunner\stations.json"
 if exist "ECO KING BLANKO TABLICA.xlsx" copy /Y "ECO KING BLANKO TABLICA.xlsx" "dist\EcoKingRunner\ECO KING BLANKO TABLICA.xlsx"
 
 echo Build complete! Make sure to zip the entire dist\EcoKingRunner folder before sending.
