@@ -29,7 +29,16 @@ from ecoking import logtext
 from ecoking import stations as registry
 from ecoking.stations import ExcelRow, Station
 
-ROOT = Path(__file__).resolve().parent.parent
+
+def _app_root() -> Path:
+    # A frozen build's __file__ points inside the bundle, not next to the
+    # exe where .env / stations.json / the template actually live.
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT = _app_root()
 WEB_DIR = ROOT / "web"
 TEMPLATE_PATH = ROOT / "ECO KING BLANKO TABLICA.xlsx"
 SCRAPER = ROOT / "ecoking_daily.py"
@@ -199,9 +208,11 @@ def _pump_process(cmd: list[str], environment: dict[str, str]) -> None:
 def build_run_command(config: dict[str, Any]) -> tuple[list[str], dict[str, str], str]:
     selected_date = str(config.get("selectedDate") or yesterday())
     output = report_path(selected_date)
-    cmd = [
-        sys.executable,
-        str(SCRAPER),
+    # A frozen exe is not a general-purpose interpreter -- it can't be told
+    # to "run ecoking_daily.py". It re-launches itself with a flag it
+    # recognises instead (see ecoking_web_launcher.py's --run-scraper).
+    cmd = [sys.executable, "--run-scraper"] if getattr(sys, "frozen", False) else [sys.executable, str(SCRAPER)]
+    cmd += [
         "--output",
         str(output),
         "--template",
