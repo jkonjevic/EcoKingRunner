@@ -110,6 +110,39 @@ python -m unittest discover -s tests -t .
 
 ---
 
+## Running it locally, with no hosting at all
+
+For a single operator, this is the simplest option of all: the app runs on
+their own PC, uses their own hardware, and never touches the internet except
+to talk to the EcoKing site. No OOM risk, no hosting cost, no signup, and
+updates arrive with a double-click instead of a rebuild → zip → send cycle.
+
+**One-time setup**, on the machine that will run it:
+
+1. Install [Python 3.11 or 3.10](https://python.org) — tick *Add python.exe to
+   PATH* during install.
+2. Install [Git for Windows](https://git-scm.com/download/win) (default
+   options are fine).
+3. `git clone https://github.com/jkonjevic/EcoKingRunner.git` into a normal
+   folder (e.g. `Documents\EcoKingRunner`).
+4. Copy a real `.env` into that folder (see `.env.example` for the shape —
+   needs `url`, `email`, `password`). This is the one file that has to be
+   copied by hand; it's deliberately never committed to git.
+5. Double-click **`Update.bat`**. First run installs everything (a few
+   minutes, mostly downloading Chromium); every later run just syncs it.
+
+**Daily use:** double-click **`Start.bat`**. It quietly checks for the latest
+code, starts the app, and opens it in the browser automatically at
+`http://127.0.0.1:8765` — nothing else on the network can reach it, so no
+`APP_PASSWORD` is needed here.
+
+**Getting updates:** `Start.bat` already pulls the latest code every time it
+runs, so most fixes just show up next time it's launched — nothing to send,
+nothing to reinstall. If a change touches a dependency (rare) and something
+breaks after an update, run **`Update.bat`** once to do a full resync.
+
+---
+
 ## Hosting it (Render)
 
 Free, no card required, deploys straight from this GitHub repo, and

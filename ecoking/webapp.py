@@ -611,7 +611,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"ok": True})
 
 
-def serve(host: str, port: int) -> None:
+def serve(host: str, port: int, open_browser: bool = False) -> None:
     server = ThreadingHTTPServer((host, port), Handler)
     mode = "cloud" if is_cloud() else "local"
     print(f"EcoKing web UI ({mode}): http://{host}:{port}")
@@ -619,6 +619,16 @@ def serve(host: str, port: int) -> None:
         print("Password protection is on (APP_PASSWORD).")
     elif is_cloud():
         print("WARNING: APP_PASSWORD is not set, so anyone with the URL can start a run.")
+
+    if open_browser:
+        import threading
+        import webbrowser
+
+        # The server isn't listening yet at this point, so the tab is opened
+        # from a short-lived timer instead of blocking serve_forever below.
+        browse_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+        threading.Timer(0.6, lambda: webbrowser.open(f"http://{browse_host}:{port}")).start()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -636,8 +646,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the EcoKing web UI.")
     parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8765")))
+    parser.add_argument(
+        "--no-browser", action="store_true", help="Don't open a browser tab automatically."
+    )
     args = parser.parse_args()
-    serve(args.host, args.port)
+    serve(args.host, args.port, open_browser=not args.no_browser and not is_cloud())
 
 
 if __name__ == "__main__":
