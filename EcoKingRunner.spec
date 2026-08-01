@@ -1,9 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('.env', '.'), ('stations.json', '.'), ('ECO KING BLANKO TABLICA.xlsx', '.')]
+datas = [
+    ('.env', '.'),
+    ('stations.json', '.'),
+    ('ECO KING BLANKO TABLICA.xlsx', '.'),
+    ('telemetry_list.py', '.'),
+    ('telemetry_mapping.json', '.'),
+]
 binaries = []
-hiddenimports = ['ecoking_daily', 'ecoking', 'ecoking.stations', 'ecoking.logtext']
+hiddenimports = ['ecoking_daily', 'ecoking', 'ecoking.stations', 'ecoking.logtext', 'ecoking.telemetry']
 tmp_ret = collect_all('playwright')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 

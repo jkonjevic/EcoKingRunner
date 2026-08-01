@@ -243,6 +243,17 @@ summary::-webkit-details-marker { display: none; }
 
 .actions { display: grid; gap: 8px; margin-top: 14px; }
 
+/* Splits "Napredna podešavanja" into the pass each setting belongs to. */
+.group-title {
+  margin: 16px 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  color: var(--text);
+}
+details.card > .group-title:first-of-type { margin-top: 12px; }
+.group-note { margin: 0 0 10px; }
+
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .field { display: grid; gap: 5px; }
 .field > span { font-size: 12px; font-weight: 600; color: var(--muted); }

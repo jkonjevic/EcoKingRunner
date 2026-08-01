@@ -33,6 +33,8 @@ SYNCED_PATHS = (
     "web",
     "ecoking_daily.py",
     "ecoking_web_launcher.py",
+    "telemetry_list.py",
+    "telemetry_mapping.json",
     "requirements.txt",
 )
 

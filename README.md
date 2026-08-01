@@ -22,6 +22,79 @@ There are two ways to run it:
 3. `ECO KING BLANKO TABLICA.xlsx` is copied, the sheet is renamed to the date,
    and four cells per station are filled in: daily m³, max m³, min m³, battery.
    The `l/s` formulas and all styling come from the template untouched.
+4. A second pass opens the telemetry site, reads each reservoir's level at
+   17:00 on the same date, and fills `NIVO REZERVOARA U 17h` in the report just
+   written. See below.
+
+---
+
+## The 17h reservoir levels
+
+The levels are not in EcoKing — they come from the ViK telemetry system
+(`nadzorhnvik`), so they are collected in a separate pass once the report
+exists. Two files next to the app drive it:
+
+* **`telemetry_list.py`** — `locations`: which rows of the site's *Spisak
+  mjernih mjesta* table to visit, spelled as they read on screen. The trailing
+  `Tele` is the antenna icon's alt text; it is ignored during matching, so
+  `Rezervoar KulaTele` and `Rezervoar Kula` both work.
+* **`telemetry_mapping.json`** — site `Lokacija` → report `LOKACIJA`:
+
+  ```json
+  { "Rezervoar Podi Tele": "REZERVOAR PODI" }
+  ```
+
+Each location is clicked open, its filter is narrowed to the selected date, and
+the `Nivo (m)` cell for `17:00` is read. The value goes into **every** meter row
+of the mapped `LOKACIJA` — `ULAZ` and `IZLAZ` alike — because it describes the
+reservoir, not one meter.
+
+Pages that report two chambers (Kumbor) have an `M1 Nivo` and an `M2 Nivo`
+column; `mjerač 1` / `mjerač 2` in the location name picks the right one. Pages
+where two meters share one level (Bajer 2) give both names the same value, so
+the mapping only needs one of them.
+
+Credentials live in `.env` as `TELEMETRIJA_URL`, `TELEMETRIJA_USERNAME` and
+`TELEMETRIJA_PASSWORD`. A location the site never loaded, a missing 17:00 row,
+or a location absent from `telemetry_mapping.json` is logged and skipped — the
+consumption report is already written by then and is never lost to it. Set
+`TELEMETRY_ENABLED=false` to skip the pass entirely.
+
+### Triggering it
+
+In the web UI (**Obračun**):
+
+* **☑ Telemetrija** — on by default. Leave it checked and *Pokreni obračun*
+  runs both passes back to back, into one file.
+* **Telemetrija** (button) — runs only this pass, over the report that already
+  exists for the selected date. Use it when the levels failed but the
+  consumption numbers are fine. It refuses if there is no report for that date
+  yet, rather than making a half-empty one.
+
+**Napredna podešavanja** is split by pass. Workers, limit, chart wait, search
+wait and *Prikaži browser* drive the EcoKing scrape only; the telemetry pass has
+its own **Čekanje po lokaciji (ms)** (default 10000) and **Prikaži browser
+(telemetrija)**. The desktop app has the same split. From a terminal:
+
+```bash
+# both passes (the default)
+python ecoking_daily.py --selected-date 2026-07-31
+
+# EcoKing only
+python ecoking_daily.py --selected-date 2026-07-31 --skip-telemetry
+
+# levels only, into the report that run already produced
+python ecoking_daily.py --selected-date 2026-07-31 --only-telemetry \
+  --output "EcoKing_Report_2026-07-31.xlsx"
+
+# watch only the telemetry browser, and give each location 20s
+python ecoking_daily.py --selected-date 2026-07-31 --headless \
+  --telemetry-headed --telemetry-wait-ms 20000
+
+# levels only, standalone, watching the browser
+python -m ecoking.telemetry --workbook "EcoKing_Report_2026-07-31.xlsx" \
+  --date 2026-07-31 --headed
+```
 
 ---
 
@@ -288,11 +361,14 @@ ecoking/
   stations.py    station registry: file format, template rows, validation
   webapp.py      web UI server and JSON API
   logtext.py     English log lines -> Serbian, shared by both UIs
+  telemetry.py   second pass: 17h reservoir levels
   check.py       python -m ecoking.check
 web/             the web UI (index.html, styles.css, app.js)
 ecoking_daily.py the scraper and the report writer
 ecoking_launcher.py  Windows desktop app
 stations.json    station -> template row -> device name
+telemetry_list.py       which telemetry locations to visit
+telemetry_mapping.json  telemetry Lokacija -> report LOKACIJA
 tests/
 ```
 
@@ -306,3 +382,11 @@ tests/
 * **Chart extraction fails** — a screenshot and an HTML snapshot are written to
   `debug/`. If the site's markup changed, set the matching `*_SELECTOR` in
   `.env` (see `.env.example`).
+* **`Telemetrija: ... nema unos u telemetry_mapping.json`** — the location was
+  read fine but has nowhere to go in the report. Add it to
+  `telemetry_mapping.json`, or drop it from `telemetry_list.py`.
+* **`Nema reda za 17:00 ...`** — the telemetry site has no reading at 17:00 for
+  that date and location. Nothing to fix in the app; check the location's table
+  on the site.
+* **Telemetry pages load slowly** — raise `TELEMETRY_WAIT_MS` in `.env` (default
+  10000 ms per location). The run also keeps polling past that wait.

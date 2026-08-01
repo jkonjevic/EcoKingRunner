@@ -1,0 +1,18 @@
+locations = [
+    "Rezervoar Podi Tele",
+    "Rezervoar Bajer2 mjerač 1 Tele",
+    "Rezervoar Spanjola mjerač Tele",
+    "Rezervoar Banja1 mjerač Tele",
+    "Rezervoar Banja2 mjerač Tele",
+    "Rezervoar Gomila Tele",
+    "Rezervoar Suscepan Tele",
+    "Rezervoar KulaTele",
+    "Rezervoar Topla Tele",
+    "Rezervoar Savina Tele",
+    "Rezervoar Bajer1Tele",
+    "Rezervoar ZvinjeTele",
+    "Rezervoar Bijela mjerač Tele",
+    "Rezervoar Kumbor mjerač 1Tele",
+    "Rezervoar Kumbor mjerač 2Tele",
+    "FS MojdezTele",
+]

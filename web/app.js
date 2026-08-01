@@ -88,9 +88,11 @@ const run = {
 
     // A hosted container has no screen and no Excel to open into.
     $("browserVisibleRow").hidden = bootstrap.cloud;
+    $("telemetryVisibleRow").hidden = bootstrap.cloud;
     $("openAfterRow").hidden = bootstrap.cloud;
 
     $("runBtn").addEventListener("click", () => this.start());
+    $("telemetryBtn").addEventListener("click", () => this.start({ onlyTelemetry: true }));
     $("stopBtn").addEventListener("click", () => this.stop());
     $("copyLog").addEventListener("click", () => navigator.clipboard.writeText($("log").textContent));
 
@@ -108,13 +110,16 @@ const run = {
       searchWait: Number($("searchWait").value || 2000),
       browserVisible: $("browserVisible").checked,
       verbose: $("verbose").checked,
+      withTelemetry: $("withTelemetry").checked,
+      telemetryWait: Number($("telemetryWait").value || 10000),
+      telemetryVisible: $("telemetryVisible").checked,
     };
   },
 
-  async start() {
+  async start(overrides = {}) {
     notify($("runMessage"), "");
     try {
-      await api.post("/api/run", this.config());
+      await api.post("/api/run", { ...this.config(), ...overrides });
       this.cursor = 0;
       $("log").textContent = "";
       this.poll();
@@ -148,6 +153,7 @@ const run = {
     const wasRunning = this.running;
     this.running = state.running;
     $("runBtn").disabled = state.running;
+    $("telemetryBtn").disabled = state.running;
     $("stopBtn").disabled = !state.running;
 
     const status = $("statStatus");

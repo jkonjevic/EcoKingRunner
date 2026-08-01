@@ -205,6 +205,9 @@ class EcoKingLauncher(ttk.Frame):
         self.verbose_var = tk.BooleanVar(value=True)
         self.keep_open_var = tk.BooleanVar(value=False)
         self.open_after_var = tk.BooleanVar(value=True)
+        self.telemetry_var = tk.BooleanVar(value=True)
+        self.telemetry_visible_var = tk.BooleanVar(value=False)
+        self.telemetry_wait_var = tk.StringVar(value="10000")
         self.limit_var = tk.StringVar(value="")
         self.workers_var = tk.IntVar(value=1)
         self.slowmo_var = tk.IntVar(value=0)
@@ -410,6 +413,14 @@ class EcoKingLauncher(ttk.Frame):
         chk4.grid(row=3, column=0, sticky=tk.W, pady=2)
         ToolTip(chk4, "Kada se očitavanje uspješno završi, automatski otvara ažurirani Excel fajl u sistemu.")
 
+        chk5 = ttk.Checkbutton(checks, text="Telemetrija (nivoi rezervoara u 17h)", variable=self.telemetry_var, style="CardCheck.TCheckbutton", command=self._refresh_command_preview)
+        chk5.grid(row=4, column=0, sticky=tk.W, pady=2)
+        ToolTip(chk5, "Ako je označeno, poslije EcoKing obračuna pokreće se i telemetrija: očitava nivo svakog rezervoara u 17h i upisuje ga u kolonu 'NIVO REZERVOARA U 17h'.")
+
+        chk6 = ttk.Checkbutton(checks, text="Prikaži browser tokom telemetrije", variable=self.telemetry_visible_var, style="CardCheck.TCheckbutton", command=self._refresh_command_preview)
+        chk6.grid(row=5, column=0, sticky=tk.W, pady=2)
+        ToolTip(chk6, "Odvojeno od prikaza browsera za EcoKing — odnosi se samo na obilazak lokacija na telemetriji.")
+
         grid = ttk.Frame(card, style="Card.TFrame")
         grid.pack(fill=tk.X)
         grid.columnconfigure(1, weight=1)
@@ -429,7 +440,17 @@ class EcoKingLauncher(ttk.Frame):
         ToolTip(lbl_limit, limit_tip)
         ToolTip(limit_entry, limit_tip)
 
-        for var in [self.limit_var, self.workers_var, self.slowmo_var, self.chart_wait_var, self.search_wait_var]:
+        # Telemetry has its own pace -- the waits above are for EcoKing only.
+        lbl_tele_wait = ttk.Label(grid, text="Telemetrija: čekanje po lokaciji (ms)", style="CardLabel.TLabel")
+        lbl_tele_wait.grid(row=5, column=0, sticky=tk.W, pady=4)
+        tele_wait_entry = ttk.Entry(grid, textvariable=self.telemetry_wait_var, width=10, font=("Segoe UI", 9))
+        tele_wait_entry.grid(row=5, column=1, sticky=tk.W, padx=(6, 12), pady=4)
+
+        tele_wait_tip = "Koliko se čeka da se učita tabela svake lokacije na telemetriji prije očitavanja nivoa u 17h (podrazumijevano 10000 ms)."
+        ToolTip(lbl_tele_wait, tele_wait_tip)
+        ToolTip(tele_wait_entry, tele_wait_tip)
+
+        for var in [self.limit_var, self.workers_var, self.slowmo_var, self.chart_wait_var, self.search_wait_var, self.telemetry_wait_var]:
             var.trace_add("write", lambda *_: self._refresh_command_preview())
 
     def _numeric_row(self, parent: ttk.Frame, row: int, label_text: str, variable: tk.IntVar, from_: int, to: int, increment: int, tooltip_text: str) -> None:
@@ -541,6 +562,12 @@ class EcoKingLauncher(ttk.Frame):
             cmd.append("--keep-browser-open")
         if self.limit_var.get().strip():
             cmd.extend(["--limit", self.limit_var.get().strip()])
+        if self.telemetry_var.get():
+            cmd.append("--telemetry-headed" if self.telemetry_visible_var.get() else "--telemetry-headless")
+            if self.telemetry_wait_var.get().strip():
+                cmd.extend(["--telemetry-wait-ms", self.telemetry_wait_var.get().strip()])
+        else:
+            cmd.append("--skip-telemetry")
 
         env = os.environ.copy()
         env["NO_COLOR"] = "1"

@@ -14,6 +14,8 @@ datas = [
     ('ecoking', 'ecoking'),
     ('web', 'web'),
     ('ecoking_daily.py', '.'),
+    ('telemetry_list.py', '.'),
+    ('telemetry_mapping.json', '.'),
     ('requirements.txt', '.'),
 ]
 binaries = []
@@ -28,7 +30,9 @@ excludes = [
     'ecoking.logtext',
     'ecoking.selfupdate',
     'ecoking.check',
+    'ecoking.telemetry',
     'ecoking_daily',
+    'telemetry_list',
 ]
 for package in ('playwright', 'openpyxl', 'dotenv'):
     tmp_ret = collect_all(package)

@@ -28,7 +28,7 @@ pyinstaller --noconfirm --clean EcoKingWebRunner.spec
 :: same place ecoking.selfupdate writes updates to). Move them out so both
 :: agree on one location.
 set OUT=dist\EcoKingWebRunner
-for %%F in (ecoking ecoking_daily.py web requirements.txt ".env" stations.json "ECO KING BLANKO TABLICA.xlsx") do (
+for %%F in (ecoking ecoking_daily.py telemetry_list.py telemetry_mapping.json web requirements.txt ".env" stations.json "ECO KING BLANKO TABLICA.xlsx") do (
     if exist "%OUT%\_internal\%%~F" (
         if exist "%OUT%\%%~F" rmdir /s /q "%OUT%\%%~F" 2>nul
         if exist "%OUT%\%%~F" del /q "%OUT%\%%~F" 2>nul

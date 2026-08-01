@@ -19,6 +19,7 @@ from openpyxl import load_workbook
 from playwright.sync_api import Browser, Error as PlaywrightError, Page, sync_playwright
 
 from ecoking import stations as station_registry
+from ecoking import telemetry
 from ecoking.stations import ExcelRow, Station
 
 
@@ -1678,7 +1679,66 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verbose", action="store_true", default=as_bool(env("VERBOSE"), default=True), help="Enable verbose logs.")
     parser.add_argument("--limit", type=int, default=None, help="Only process the first N stations.")
     parser.add_argument("--selected-date", default=None, help="Reporting date in YYYY-MM-DD format. Defaults to yesterday.")
+    parser.add_argument("--skip-telemetry", action="store_true", help="Only scrape EcoKing; leave the 17h levels empty.")
+    parser.add_argument("--only-telemetry", action="store_true", help="Only read the 17h levels into an existing report.")
+    parser.add_argument("--telemetry-headed", action="store_true", help="Show the telemetry browser, whatever the EcoKing pass does.")
+    parser.add_argument("--telemetry-headless", action="store_true", help="Hide the telemetry browser, whatever the EcoKing pass does.")
+    parser.add_argument("--telemetry-wait-ms", type=int, default=None, help="Settle time per telemetry location. Default 10000.")
     return parser.parse_args()
+
+
+def telemetry_headless(args: argparse.Namespace, headless: bool) -> bool:
+    """Decide whether the telemetry browser is hidden, on its own settings.
+
+    The telemetry pass is a separate site with its own pace, so watching it is
+    a separate decision from watching the EcoKing scrape:
+    ``--telemetry-headed``/``--telemetry-headless`` win, then
+    ``TELEMETRY_HEADLESS``, and only with neither set does it follow whatever
+    the EcoKing pass was told to do.
+    """
+    if args.telemetry_headed:
+        return False
+    if args.telemetry_headless:
+        return True
+    configured = env("TELEMETRY_HEADLESS")
+    if configured and configured.strip():
+        return as_bool(configured, default=True)
+    return headless
+
+
+def run_telemetry_only(
+    output_path: Path, target_date: datetime, headless: bool, args: argparse.Namespace
+) -> int:
+    """Fill the 17h levels into a report a previous run already produced.
+
+    Deliberately refuses to create the workbook itself: a levels-only file
+    built from the blank template looks like a finished daily report but has
+    every consumption column empty.
+    """
+    if not output_path.exists():
+        raise FileNotFoundError(
+            f"Nema izvještaja za {target_date.strftime(ISO_DATE_FORMAT)} ({output_path}). "
+            "Prvo pokreni obračun, pa onda nivoe."
+        )
+    logging.info("Only the telemetry stage was requested; filling %s.", output_path)
+    result = telemetry.run_stage(
+        workbook_path=output_path,
+        target_date=target_date,
+        root=ROOT,
+        headless=telemetry_headless(args, headless),
+        slow_mo_ms=args.slow_mo_ms,
+        wait_ms=args.telemetry_wait_ms,
+    )
+    report_path = output_path
+    if as_bool(env("COPY_REPORT_TO_DESKTOP"), default=True):
+        report_path = store_report_on_desktop(report_path)
+    logging.info(
+        "REPORT GENERATED SUCCESSFULLY: %s for %s with %s mapped rows",
+        report_path,
+        target_date.strftime(ISO_DATE_FORMAT),
+        result.written_rows if result else 0,
+    )
+    return 0
 
 
 def main() -> int:
@@ -1695,6 +1755,10 @@ def main() -> int:
     target_date = parse_selected_date(args.selected_date)
     default_output = (desktop_directory() or Path.cwd()) / f"EcoKing_Report_{target_date.strftime(ISO_DATE_FORMAT)}.xlsx"
     output_path = Path(args.output) if args.output else default_output
+
+    if args.only_telemetry:
+        return run_telemetry_only(output_path, target_date, headless, args)
+
     target_date_interval, target_date_total = target_dates(target_date)
     logging.info(
         "Selected date=%s; interval target=%s; total target=%s",
@@ -1728,6 +1792,20 @@ def main() -> int:
     report_path = clone_and_populate_template(
         template_path, output_path, target_date, result.measurements, jobs
     )
+    # Second pass: the 17h reservoir levels come from the telemetry site, not
+    # EcoKing, so they are filled in after the workbook exists. It never
+    # raises -- a telemetry outage must not cost us the consumption report.
+    if args.skip_telemetry:
+        logging.info("Telemetry stage is disabled (--skip-telemetry); skipping.")
+    else:
+        telemetry.run_stage(
+            workbook_path=report_path,
+            target_date=target_date,
+            root=ROOT,
+            headless=telemetry_headless(args, headless),
+            slow_mo_ms=args.slow_mo_ms,
+            wait_ms=args.telemetry_wait_ms,
+        )
     if as_bool(env("COPY_REPORT_TO_DESKTOP"), default=True):
         report_path = store_report_on_desktop(report_path)
     log_run_report(result)

@@ -50,15 +50,24 @@
         <input id="selectedDate" type="date" class="input input-lg">
         <p class="muted" id="dateHint"></p>
 
+        <label class="switch">
+          <input id="withTelemetry" type="checkbox" checked>
+          <span><strong>Telemetrija</strong><small>Ako je označeno, „Pokreni obračun“ radi oba koraka jedan za drugim: prvo EcoKing obračun, pa telemetriju (nivoi rezervoara u 17h) u istu tabelu.</small></span>
+        </label>
+
         <div class="actions">
           <button id="runBtn" class="btn btn-primary btn-block">Pokreni obračun</button>
+          <button id="telemetryBtn" class="btn btn-block">Telemetrija</button>
           <button id="stopBtn" class="btn btn-danger btn-block" disabled>Zaustavi</button>
         </div>
+        <p class="muted">Dugme „Telemetrija“ pokreće samo drugi korak i dopunjava izvještaj koji već postoji za izabrani datum.</p>
         <p id="runMessage" class="notice" role="status" hidden></p>
       </div>
 
       <details class="card">
         <summary class="card-title">Napredna podešavanja</summary>
+
+        <h3 class="group-title">EcoKing obračun</h3>
         <div class="field-grid">
           <label class="field">
             <span>Paralelnih browsera</span>
@@ -88,6 +97,19 @@
         <label class="switch" id="openAfterRow">
           <input id="openAfter" type="checkbox" checked>
           <span><strong>Otvori Excel po završetku</strong><small>Automatski otvara gotov izvještaj.</small></span>
+        </label>
+
+        <h3 class="group-title">Telemetrija (nivoi u 17h)</h3>
+        <p class="muted group-note">Podešavanja iznad važe samo za EcoKing obračun. Telemetrija koristi svoja.</p>
+        <div class="field-grid">
+          <label class="field">
+            <span>Čekanje po lokaciji (ms)</span>
+            <input id="telemetryWait" type="number" min="2000" step="1000" value="10000" class="input">
+          </label>
+        </div>
+        <label class="switch" id="telemetryVisibleRow">
+          <input id="telemetryVisible" type="checkbox">
+          <span><strong>Prikaži browser (telemetrija)</strong><small>Otvara vidljiv prozor dok se obilaze lokacije na telemetriji.</small></span>
         </label>
       </details>
 

@@ -143,8 +143,13 @@ def append_log(line: str) -> None:
         if progress:
             STATE.done = int(progress.group(1))
             STATE.total = int(progress.group(2))
-            label = translated.split("Stanica=", 1)[-1].split(", Excel red=", 1)[0]
-            STATE.current = label.strip()
+            # Two passes report progress: EcoKing stations ("Stanica=") and the
+            # telemetry levels ("Lokacija="). The counter restarts for the
+            # second one, which is what the log lines say too.
+            marker = next((name for name in ("Stanica=", "Lokacija=") if name in translated), None)
+            if marker:
+                label = translated.split(marker, 1)[-1].split(", Excel red=", 1)[0]
+                STATE.current = label.strip()
         log_path = STATE.log_path
     if log_path:
         with log_path.open("a", encoding="utf-8") as handle:
@@ -233,6 +238,13 @@ def build_run_command(config: dict[str, Any]) -> tuple[list[str], dict[str, str]
     if limit:
         cmd.extend(["--limit", str(_clamp(limit, 1, 1, 500))])
 
+    # "Samo nivoi" re-runs the second pass over a report that already exists;
+    # otherwise the checkbox decides whether it follows the EcoKing scrape.
+    if bool(config.get("onlyTelemetry")):
+        cmd.append("--only-telemetry")
+    elif not bool(config.get("withTelemetry", True)):
+        cmd.append("--skip-telemetry")
+
     environment = os.environ.copy()
     environment["NO_COLOR"] = "1"
     environment["PYTHONIOENCODING"] = "utf-8"
@@ -240,6 +252,11 @@ def build_run_command(config: dict[str, Any]) -> tuple[list[str], dict[str, str]
     environment["CHART_WAIT_MS"] = str(_clamp(config.get("chartWait"), 5000, 1000, 60000))
     environment["SEARCH_RESULTS_WAIT_MS"] = str(_clamp(config.get("searchWait"), 2000, 500, 30000))
     environment["COPY_REPORT_TO_DESKTOP"] = "0" if is_cloud() else "1"
+    # The telemetry pass has its own browser settings -- the ones above and
+    # --headed/--headless are aimed at the EcoKing scrape.
+    environment["TELEMETRY_WAIT_MS"] = str(_clamp(config.get("telemetryWait"), 10000, 2000, 120000))
+    telemetry_visible = bool(config.get("telemetryVisible")) and not is_cloud()
+    environment["TELEMETRY_HEADLESS"] = "0" if telemetry_visible else "1"
     return cmd, environment, selected_date
 
 
@@ -594,18 +611,31 @@ class Handler(BaseHTTPRequestHandler):
         if not TEMPLATE_PATH.exists():
             raise ValueError(f"Nedostaje master template: {TEMPLATE_PATH.name}")
 
-        rows = load_template_rows()
-        path = stations_path()
-        stations = registry.load_stations(path) if path.exists() else []
-        blocking = [issue for issue in registry.validate(stations, rows) if issue.severity == "error"]
-        if blocking:
-            raise ValueError(
-                "Lista stanica ima greške:\n" + "\n".join(f"{i.station}: {i.message}" for i in blocking)
-            )
+        only_telemetry = bool(payload.get("onlyTelemetry"))
+        if only_telemetry:
+            # This pass only writes into a workbook a full run already made,
+            # so the station list is irrelevant -- but the report must exist.
+            if not report_path(selected_date).exists():
+                raise ValueError(
+                    f"Nema izvještaja za {selected_date}. Prvo pokreni obračun, pa onda nivoe."
+                )
+        else:
+            rows = load_template_rows()
+            path = stations_path()
+            stations = registry.load_stations(path) if path.exists() else []
+            blocking = [issue for issue in registry.validate(stations, rows) if issue.severity == "error"]
+            if blocking:
+                raise ValueError(
+                    "Lista stanica ima greške:\n" + "\n".join(f"{i.station}: {i.message}" for i in blocking)
+                )
 
         cmd, environment, selected_date = build_run_command({**payload, "selectedDate": selected_date})
         log_name = start_process(cmd, environment, selected_date=selected_date)
-        append_log(f"Generisanje izvještaja za datum {selected_date}.")
+        append_log(
+            f"Očitavanje nivoa rezervoara u 17h za datum {selected_date}."
+            if only_telemetry
+            else f"Generisanje izvještaja za datum {selected_date}."
+        )
         append_log(f"Izlazni fajl: {report_path(selected_date).name}")
         self.send_json({"ok": True, "logFile": log_name})
 

@@ -62,6 +62,24 @@ REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^NO DATA \| row=(.+?) \| (.+?) \| (.+)$"), r"BEZ PODATAKA | red=\1 | \2 | razlog: \3"),
     (re.compile(r"^OK \| row=(.+?) \| (.+)$"), r"OK | red=\1 | \2"),
     (re.compile(r"^Run failed: (.+)$"), r"Pokretanje nije uspjelo: \1"),
+    # Second pass: 17h reservoir levels from the telemetry site.
+    (re.compile(r"^Telemetry: reading (\d+):00 levels for (.+) across (\d+) location\(s\)$"), r"Telemetrija: očitavam nivoe u \1:00 za datum \2 na \3 lokacija"),
+    (re.compile(r"^Telemetry: opening (.+)$"), r"Telemetrija: otvaram stranicu \1"),
+    (re.compile(r"^Telemetry: already signed in$"), "Telemetrija: prijava već postoji"),
+    (re.compile(r"^Telemetry: signed in as (.+)$"), r"Telemetrija: prijavljen kao \1"),
+    (re.compile(r"^Telemetry \[(\d+)/(\d+)\] Location=(.+)$"), r"Telemetrija [\1/\2] Lokacija=\3"),
+    (re.compile(r"^Telemetry: LEVEL (.+) m at (.+) for (.+)$"), r"Telemetrija: NIVO \1 m u \2 za \3"),
+    (re.compile(r"^Telemetry: wrote (.+) m into (.+) \(rows (.+)\)$"), r"Telemetrija: upisano \1 m za \2 (redovi \3)"),
+    (re.compile(r"^Telemetry: could not read (.+?): (.+)$"), r"Telemetrija: neuspjelo očitavanje za \1: \2"),
+    (re.compile(r"^Telemetry: (.+) is not in the site's location table; skipping\.$"), r"Telemetrija: \1 ne postoji u tabeli lokacija na sajtu; preskačem."),
+    (re.compile(r"^Telemetry: (.+) has no entry in (.+); its level is not written\.$"), r"Telemetrija: \1 nema unos u \2; nivo nije upisan."),
+    (re.compile(r"^Telemetry: no report row with LOKACIJA=(.+) for (.+)\.$"), r"Telemetrija: nema reda LOKACIJA=\1 za \2."),
+    (re.compile(r"^Telemetry: could not write the levels into (.+?): (.+)$"), r"Telemetrija: nije moguće upisati nivoe u \1: \2"),
+    (re.compile(r"^Telemetry stage is disabled .*$"), "Telemetrija je isključena; preskačem."),
+    (re.compile(r"^Telemetry stage skipped: (.+)$"), r"Telemetrija je preskočena: \1"),
+    (re.compile(r"^Telemetry stage failed: (.+)\. The report is kept without the 17h levels\.$"), r"Telemetrija nije uspjela: \1. Izvještaj ostaje bez nivoa u 17h."),
+    (re.compile(r"^TELEMETRY DONE: (\d+) of (\d+) location\(s\) read, (\d+) report row\(s\) filled$"), r"TELEMETRIJA ZAVRŠENA: očitano \1 od \2 lokacija, popunjeno \3 redova"),
+    (re.compile(r"^TELEMETRY FAIL \| (.+?) \| (.+)$"), r"TELEMETRIJA NEUSPJEH | \1 | razlog: \2"),
 ]
 
 

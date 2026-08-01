@@ -1,3 +1,3 @@
 """Shared building blocks for the EcoKing daily report automation."""
 
-__all__ = ["stations", "logtext"]
+__all__ = ["stations", "logtext", "telemetry"]
