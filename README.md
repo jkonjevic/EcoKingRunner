@@ -114,8 +114,62 @@ python -m unittest discover -s tests -t .
 
 For a single operator, this is the simplest option of all: the app runs on
 their own PC, uses their own hardware, and never touches the internet except
-to talk to the EcoKing site. No OOM risk, no hosting cost, no signup, and
-updates arrive with a double-click instead of a rebuild → zip → send cycle.
+to talk to the EcoKing site and to check for updates. No OOM risk, no hosting
+cost, no signup, and fixes arrive with a double-click instead of a
+rebuild → zip → send cycle.
+
+There are two ways to get it onto that PC: send them a ready-to-run build (no
+Python or Git needed on their end), or have them set it up from source. For
+someone who isn't going to run installers or type commands, send the build.
+
+### Option A — send a ready-to-run build (recommended for a non-technical user)
+
+**Building it** (on your machine):
+
+```bat
+build_windows_web.bat
+```
+
+This produces `dist\EcoKingWebRunner\` — a self-contained folder with Python,
+Chromium, and every dependency already installed. It's large (roughly 800 MB
+unzipped, ~340 MB as a zip) because Chromium is bundled, so:
+
+- **Zip the whole `dist\EcoKingWebRunner` folder.** Email won't take a 340 MB
+  attachment — use a USB drive, or upload the zip to OneDrive/Google Drive and
+  send a share link instead.
+- Before zipping, make sure the `.env` inside that folder has the real
+  `url` / `email` / `password` — `build_windows_web.bat` copies whatever
+  `.env` sits in the project root at build time.
+
+**What they do, once:**
+
+1. Copy the zip over (USB, or download it from your share link) and extract
+   it anywhere — e.g. `Desktop\EcoKingRunner`.
+2. Double-click `EcoKingWebRunner.exe`.
+3. Windows SmartScreen will likely say *"Windows protected your PC"* the first
+   time, since the exe isn't code-signed — click **More info → Run anyway**.
+4. The app opens in their browser automatically, at
+   `http://127.0.0.1:8765`. Nothing else on the network can reach it.
+
+**Getting updates:** every launch of `EcoKingWebRunner.exe` quietly pulls the
+latest application code from this GitHub repo before starting — so most fixes
+just show up the next time they open it. Nothing to resend, nothing to
+reinstall. `.env`, `stations.json`, the report template, and any saved
+reports are never touched by this — only the app's own code is synced.
+
+This only works because the repo is **public**; the exe downloads a plain zip
+of the `main` branch with no login. If it were private, this update mechanism
+would need a token and stop working silently (falling back to whatever
+version is already installed, which is safe but quiet about it — check the
+console window it opens for `Could not check for updates` if something seems
+stale).
+
+**When a full rebuild is still needed:** if a change adds a new Python
+dependency (rare — logic/UI fixes never do), the auto-update won't pick it up,
+since the frozen Python environment itself isn't part of the sync. Run
+`build_windows_web.bat` again and resend in that case, same as before.
+
+### Option B — set it up from source (if you're doing it yourself, e.g. over remote access)
 
 **One-time setup**, on the machine that will run it:
 
@@ -133,13 +187,12 @@ updates arrive with a double-click instead of a rebuild → zip → send cycle.
 
 **Daily use:** double-click **`Start.bat`**. It quietly checks for the latest
 code, starts the app, and opens it in the browser automatically at
-`http://127.0.0.1:8765` — nothing else on the network can reach it, so no
-`APP_PASSWORD` is needed here.
+`http://127.0.0.1:8765`.
 
 **Getting updates:** `Start.bat` already pulls the latest code every time it
-runs, so most fixes just show up next time it's launched — nothing to send,
-nothing to reinstall. If a change touches a dependency (rare) and something
-breaks after an update, run **`Update.bat`** once to do a full resync.
+runs, so most fixes just show up next time it's launched. If a change touches
+a dependency (rare) and something breaks after an update, run **`Update.bat`**
+once to do a full resync.
 
 ---
 
