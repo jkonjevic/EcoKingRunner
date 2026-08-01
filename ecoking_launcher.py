@@ -711,6 +711,9 @@ class EcoKingLauncher(ttk.Frame):
 
     def _log_tag(self, text: str) -> str:
         lowered = text.lower()
+        # "NEUSPJELO: 0" is good news, so don't paint an empty bucket red.
+        if re.search(r":\s*0$", lowered.strip()):
+            return "normal"
         if "greška" in lowered or "neuspjelo" in lowered or "nije uspjelo" in lowered:
             return "error"
         if "upozorenje" in lowered or "nema rezultata" in lowered or "bez podataka" in lowered:

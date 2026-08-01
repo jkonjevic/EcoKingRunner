@@ -49,6 +49,7 @@ REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r'^FOUND: MIN: (.+) MAX: (.+) DAILY: (.+) BATTERY: (.+) for "(.+)"$'), r'PRONAĐENO: MIN=\1, MAX=\2, DNEVNO=\3, BATERIJA=\4 za "\5"'),
     (re.compile(r'^FOUND: MIN: (.+) MAX: (.+) DAILY: (.+) for "(.+)"$'), r'PRONAĐENO: MIN=\1, MAX=\2, DNEVNO=\3 za "\4"'),
     (re.compile(r"^Failed to scrape station (.+) for Excel row (.+)$"), r"Neuspjelo očitavanje stanice \1 za Excel red \2"),
+    (re.compile(r"^Skipping station (.+) \(Excel row (.+)\): (.+)$"), r"Preskačem stanicu \1 (Excel red \2): \3"),
     (re.compile(r"^Saved debug artifacts: (.+)\.png and (.+)\.html$"), r"Sačuvani su debug fajlovi: \1.png i \2.html"),
     (re.compile(r"^Generated report (.+) for (.+) with (\d+) mapped rows\.$"), r"Kreiran je izvještaj \1 za datum \2 sa \3 mapiranih redova."),
     (re.compile(r"^Could not place (\d+) scraped station\(s\): (.+)$"), r"Nije moguće smjestiti \1 očitanih stanica: \2"),
@@ -57,6 +58,9 @@ REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^SUCCESSFUL: (\d+)$"), r"USPJEŠNO: \1"),
     (re.compile(r"^NO DATA / NO ENTRIES: (\d+)$"), r"BEZ PODATAKA / BEZ UNOSA: \1"),
     (re.compile(r"^FAILED: (\d+)$"), r"NEUSPJELO: \1"),
+    (re.compile(r"^FAIL \| row=(.+?) \| (.+?) \| (.+)$"), r"NEUSPJEH | red=\1 | \2 | razlog: \3"),
+    (re.compile(r"^NO DATA \| row=(.+?) \| (.+?) \| (.+)$"), r"BEZ PODATAKA | red=\1 | \2 | razlog: \3"),
+    (re.compile(r"^OK \| row=(.+?) \| (.+)$"), r"OK | red=\1 | \2"),
     (re.compile(r"^Run failed: (.+)$"), r"Pokretanje nije uspjelo: \1"),
 ]
 

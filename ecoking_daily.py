@@ -118,6 +118,18 @@ def as_bool(value: str | bool | None, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def one_line(text: object, limit: int | None = None) -> str:
+    """Flatten an error message so it stays on a single, readable log line.
+
+    Playwright errors carry multi-line call logs, and the UI colours the log
+    line by line, so a wrapped message loses its colour after the first line.
+    """
+    collapsed = re.sub(r"\s+", " ", str(text)).strip()
+    if limit and len(collapsed) > limit:
+        return collapsed[: limit - 1].rstrip() + "…"
+    return collapsed
+
+
 def configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     use_color = not as_bool(os.getenv("NO_COLOR"), default=False)
@@ -857,34 +869,73 @@ def select_website_date(page: Page, website_target_date: datetime) -> None:
         prev = prev or "button[aria-label*='Previous'], button[title*='Previous'], button[title*='previous'], button[ng-click='move(-1)']"
         next_ = next_ or "button[aria-label*='Next'], button[title*='Next'], button[title*='next'], button[ng-click='move(1)']"
 
-    for _ in range(120):
-        month_match = page.evaluate(
+    # The calendar opens on the month of the date that is currently applied on
+    # the site, not on the current month, so the number of steps to take can
+    # only be derived from the header the widget is actually showing. Read it
+    # each iteration and step until it matches, rather than assuming a
+    # starting point.
+    month_titles = {
+        "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+
+    def displayed_month() -> tuple[int, int] | None:
+        title = page.evaluate(
             """() => {
-              const roots = Array.from(document.querySelectorAll('[role=dialog], .modal, .ui-dialog, .datepicker'));
-              const root = roots.find(el => { const r=el.getBoundingClientRect(), s=getComputedStyle(el); return s.display !== 'none' && r.width > 0; });
-              return root ? (root.innerText || root.textContent || '') : '';
+              const el = document.querySelector('.uib-title, [role=dialog] .uib-title');
+              return el ? (el.innerText || '').trim() : '';
             }"""
         )
-        month_text = str(month_match or "")
-        if website_target_date.strftime("%B").lower() in month_text.lower() and str(website_target_date.year) in month_text:
+        match = re.search(r"([A-Za-z]+)\s+(\d{4})", str(title or ""))
+        if not match or match.group(1).lower() not in month_titles:
+            return None
+        return int(match.group(2)), month_titles[match.group(1).lower()]
+
+    target_month = (website_target_date.year, website_target_date.month)
+    for _ in range(120):
+        shown = displayed_month()
+        if shown is None or shown == target_month:
             break
-        # Calendar headers vary, so use the first visible navigation control.
-        current = datetime.now().replace(day=1)
-        if website_target_date.year > current.year or (website_target_date.year == current.year and website_target_date.month > current.month):
-            if not click_first_visible(page, [next_], "next calendar month", timeout_ms=1_000):
-                raise RuntimeError("Could not navigate to the requested calendar month. Set WEBSITE_DATE_NEXT_SELECTOR.")
-        else:
-            if not click_first_visible(page, [prev], "previous calendar month", timeout_ms=1_000):
-                raise RuntimeError("Could not navigate to the requested calendar month. Set WEBSITE_DATE_PREV_SELECTOR.")
+        step_forward = shown < target_month
+        step_selector = next_ if step_forward else prev
+        step_label = "next calendar month" if step_forward else "previous calendar month"
+        if not click_first_visible(page, [step_selector], step_label, timeout_ms=1_000):
+            raise RuntimeError("Could not navigate to the requested calendar month. Set WEBSITE_DATE_NEXT_SELECTOR/WEBSITE_DATE_PREV_SELECTOR.")
         page.wait_for_timeout(100)
 
+    # Day cells are zero-padded ("01"), the grid pads each month with the
+    # neighbouring months' days (marked text-muted on the inner span), and a
+    # week-number column carries bare numbers that would also match a day.
+    # Restrict to real day cells and accept the padded form.
     day_selector = env("WEBSITE_DATE_DAY_SELECTOR")
+    day_pattern = re.compile(rf"^0*{re.escape(target_day)}$")
     if day_selector:
-        day = dialog.locator(day_selector).filter(has_text=re.compile(rf"^{re.escape(target_day)}$")).last
+        candidates = dialog.locator(day_selector).filter(has_text=day_pattern)
     else:
-        day = dialog.locator(f"[data-date='{target_display}'], [data-date='{website_target_date.strftime(ISO_DATE_FORMAT)}'], [data-day='{target_display}'], [data-day='{website_target_date.strftime(ISO_DATE_FORMAT)}']").first
-        if day.count() == 0:
-            day = dialog.locator("button, td, [role='gridcell']").filter(has_text=re.compile(rf"^{re.escape(target_day)}$")).last
+        candidates = dialog.locator("td.uib-day button")
+        if not candidates.count():
+            candidates = dialog.locator("td[role='gridcell'] button, td button")
+
+    day = None
+    for index in range(candidates.count()):
+        candidate = candidates.nth(index)
+        try:
+            if not day_pattern.match((candidate.inner_text() or "").strip()):
+                continue
+            if candidate.locator("span.text-muted").count():
+                continue
+            if not candidate.is_enabled(timeout=500):
+                continue
+        except (PlaywrightError, TypeError):
+            continue
+        day = candidate
+        break
+
+    if day is None:
+        raise RuntimeError(
+            f"Could not find a selectable cell for website date {target_display} "
+            f"in the displayed month ({candidates.count()} day cell(s) scanned). Set WEBSITE_DATE_DAY_SELECTOR."
+        )
     try:
         day.click(timeout=5_000)
     except PlaywrightError as exc:
@@ -1453,12 +1504,29 @@ def run_browser(
                         job.label,
                     )
                 except Exception:
-                    logging.exception("Failed to scrape station %s for Excel row %s", job.label, job.excel_row)
-                    reason = "See traceback above"
+                    reason = "Unknown error"
                     try:
-                        reason = str(sys.exc_info()[1])
+                        reason = one_line(sys.exc_info()[1])
                     except Exception:
                         pass
+                    # A single station failing is not fatal, so keep it at
+                    # warning level here and let the end-of-run summary raise
+                    # it to an error with the full explanation. The traceback
+                    # stays available under --verbose.
+                    logging.warning(
+                        "Skipping station %s (Excel row %s): %s",
+                        job.label,
+                        job.excel_row,
+                        one_line(reason, 200),
+                    )
+                    # --verbose is on by default in the launcher, so tying the
+                    # traceback to it would bury the warning above under a wall
+                    # of Python frames. The reason is kept in full for the
+                    # end-of-run summary; set SHOW_TRACEBACKS=1 to get frames.
+                    if as_bool(env("SHOW_TRACEBACKS"), default=False):
+                        logging.warning(
+                            "Traceback for station %s (Excel row %s)", job.label, job.excel_row, exc_info=True
+                        )
                     issue = RunIssue(job, reason)
                     if "No numeric 1-day chart values" in reason or "No 30-day bar found" in reason:
                         no_data.append(issue)
@@ -1578,13 +1646,22 @@ def log_run_report(result: RunResult) -> None:
             measurement.battery_voltage if measurement else None,
         )
 
-    logging.info("NO DATA / NO ENTRIES: %s", len(result.no_data))
+    # Counts stay at info when they are zero so a clean run reads calm; the
+    # buckets that actually need attention are raised to warning/error, which
+    # is what colours them orange/red in the launcher and the terminal.
+    no_data_log = logging.warning if result.no_data else logging.info
+    no_data_log("NO DATA / NO ENTRIES: %s", len(result.no_data))
     for issue in result.no_data:
-        logging.info("  NO DATA | row=%s | %s | %s", issue.job.excel_row, issue.job.label, issue.reason)
+        logging.warning(
+            "  NO DATA | row=%s | %s | %s", issue.job.excel_row, issue.job.label, one_line(issue.reason)
+        )
 
-    logging.info("FAILED: %s", len(result.failures))
+    failed_log = logging.error if result.failures else logging.info
+    failed_log("FAILED: %s", len(result.failures))
     for issue in result.failures:
-        logging.info("  FAIL | row=%s | %s | %s", issue.job.excel_row, issue.job.label, issue.reason)
+        logging.error(
+            "  FAIL | row=%s | %s | %s", issue.job.excel_row, issue.job.label, one_line(issue.reason)
+        )
     logging.info("======================================")
 
 
