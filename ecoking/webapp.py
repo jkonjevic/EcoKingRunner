@@ -337,6 +337,24 @@ def list_reports() -> list[dict[str, Any]]:
     return reports[:30]
 
 
+def delete_report(selected_date: str) -> None:
+    """Delete one generated report.
+
+    Only ever touches ``reports_dir()/EcoKing_Report_<date>.xlsx``: the name is
+    rebuilt from a validated date rather than taken from the request, so a
+    crafted one cannot reach another file.
+    """
+    path = report_path(selected_date)
+    if not path.exists():
+        raise ValueError("Izvještaj za taj datum ne postoji.")
+    try:
+        path.unlink()
+    except OSError as exc:
+        # Excel keeps an exclusive lock on an open workbook.
+        raise RuntimeError(f"Nije moguće obrisati izvještaj: {exc}. Zatvori ga u Excelu pa probaj ponovo.") from exc
+    append_log(f"Obrisan izvještaj {path.name}.")
+
+
 def open_in_excel(path: Path) -> bool:
     """Open a finished report in the desktop spreadsheet app. Local runs only."""
     if is_cloud() or not path.exists():
@@ -544,6 +562,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if route.path == "/api/stations/repair":
                 self.send_json(repair_stations())
+                return
+            if route.path == "/api/delete-report":
+                selected_date = str(payload.get("selectedDate") or "")
+                if not _DATE_RE.match(selected_date):
+                    self.send_json({"error": "Neispravan datum."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                delete_report(selected_date)
+                self.send_json({"ok": True, "reports": list_reports()})
                 return
             if route.path == "/api/open-report":
                 selected_date = str(payload.get("selectedDate") or yesterday())

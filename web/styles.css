@@ -355,6 +355,10 @@ details.card > .group-title:first-of-type { margin-top: 12px; }
 .report-row .spacer { flex: 1; }
 .report-empty { color: var(--muted); font-size: 13px; }
 
+/* Deleting is destructive, so it stays quiet until the row is hovered. */
+.btn-remove { color: var(--muted); padding: 5px 9px; line-height: 1; }
+.btn-remove:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+
 /* Stations table ---------------------------------------------------------- */
 
 .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

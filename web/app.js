@@ -221,9 +221,29 @@ const run = {
       download.href = `/api/report?date=${encodeURIComponent(report.date)}`;
       download.textContent = "Preuzmi";
 
-      row.append(date, meta, spacer, download);
+      const remove = document.createElement("button");
+      remove.className = "btn btn-ghost btn-sm btn-remove";
+      remove.textContent = "✕";
+      remove.title = `Obriši izvještaj ${report.name}`;
+      remove.setAttribute("aria-label", remove.title);
+      remove.addEventListener("click", () => this.removeReport(report));
+
+      row.append(date, meta, spacer, download, remove);
       container.appendChild(row);
     }
+  },
+
+  async removeReport(report) {
+    // The file is deleted from disk, not just hidden from the list.
+    if (!confirm(`Obrisati izvještaj ${report.name}?\n\nFajl se briše sa diska i ne može se vratiti.`)) return;
+    notify($("runMessage"), "");
+    try {
+      await api.post("/api/delete-report", { selectedDate: report.date });
+      notify($("runMessage"), `Izvještaj ${report.name} je obrisan.`, "ok");
+    } catch (error) {
+      notify($("runMessage"), error.message, "error");
+    }
+    await this.refreshReports();
   },
 };
 
