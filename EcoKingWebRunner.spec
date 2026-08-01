@@ -20,7 +20,7 @@ binaries = []
 # Excluding ecoking/* from analysis (see excludes below) means PyInstaller
 # never scans their source, so it can't auto-detect what THEY import either
 # -- every stdlib module those files reach for has to be listed here by hand.
-hiddenimports = ['http', 'http.client', 'http.cookies', 'http.server', 'mimetypes', 'secrets']
+hiddenimports = ['http', 'http.client', 'http.cookies', 'http.server', 'json', 'mimetypes', 'secrets', 'webbrowser']
 excludes = [
     'ecoking',
     'ecoking.webapp',
