@@ -319,16 +319,58 @@ def repair_stations() -> dict[str, Any]:
     return stations_payload()
 
 
+#: Dates the user took out of the Izvještaji list. The list itself is just a
+#: directory listing, so hiding a row has to be remembered somewhere; this
+#: keeps it out of the reports folder so it never looks like a report.
+HIDDEN_REPORTS_FILE = "hidden_reports.json"
+
+
+def hidden_reports_path() -> Path:
+    return data_dir() / HIDDEN_REPORTS_FILE
+
+
+def load_hidden_reports() -> set[str]:
+    path = hidden_reports_path()
+    if not path.exists():
+        return set()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # A corrupt file must not take the reports list down with it.
+        return set()
+    dates = raw.get("hidden") if isinstance(raw, dict) else raw
+    return {str(date) for date in dates or [] if _DATE_RE.match(str(date))}
+
+
+def save_hidden_reports(dates: set[str]) -> None:
+    path = hidden_reports_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"hidden": sorted(dates, reverse=True)}, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def all_report_dates() -> set[str]:
+    return {
+        item.stem.replace("EcoKing_Report_", "")
+        for item in reports_dir().glob("EcoKing_Report_*.xlsx")
+    }
+
+
 def list_reports() -> list[dict[str, Any]]:
+    hidden = load_hidden_reports()
     reports = []
     for item in sorted(reports_dir().glob("EcoKing_Report_*.xlsx"), reverse=True):
+        date = item.stem.replace("EcoKing_Report_", "")
+        if date in hidden:
+            continue
         try:
             stat = item.stat()
         except OSError:
             continue
         reports.append(
             {
-                "date": item.stem.replace("EcoKing_Report_", ""),
+                "date": date,
                 "name": item.name,
                 "size": stat.st_size,
                 "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y. %H:%M"),
@@ -337,22 +379,31 @@ def list_reports() -> list[dict[str, Any]]:
     return reports[:30]
 
 
-def delete_report(selected_date: str) -> None:
-    """Delete one generated report.
+def reports_payload() -> dict[str, Any]:
+    """The list plus how many rows are hidden, so the UI can offer them back."""
+    return {"reports": list_reports(), "hiddenCount": len(load_hidden_reports() & all_report_dates())}
 
-    Only ever touches ``reports_dir()/EcoKing_Report_<date>.xlsx``: the name is
-    rebuilt from a validated date rather than taken from the request, so a
-    crafted one cannot reach another file.
-    """
-    path = report_path(selected_date)
-    if not path.exists():
+
+def hide_report(selected_date: str) -> None:
+    """Take one row out of the Izvještaji list. The .xlsx stays on disk."""
+    if selected_date not in all_report_dates():
         raise ValueError("Izvještaj za taj datum ne postoji.")
-    try:
-        path.unlink()
-    except OSError as exc:
-        # Excel keeps an exclusive lock on an open workbook.
-        raise RuntimeError(f"Nije moguće obrisati izvještaj: {exc}. Zatvori ga u Excelu pa probaj ponovo.") from exc
-    append_log(f"Obrisan izvještaj {path.name}.")
+    hidden = load_hidden_reports()
+    hidden.add(selected_date)
+    # Dates whose file is gone would pile up forever otherwise.
+    save_hidden_reports(hidden & all_report_dates())
+    append_log(f"Izvještaj {report_path(selected_date).name} je uklonjen iz liste (fajl je ostao na disku).")
+
+
+def unhide_reports() -> None:
+    save_hidden_reports(set())
+
+
+def unhide_report(selected_date: str) -> None:
+    """A freshly generated report must never stay hidden."""
+    hidden = load_hidden_reports()
+    if selected_date in hidden:
+        save_hidden_reports((hidden - {selected_date}) & all_report_dates())
 
 
 def open_in_excel(path: Path) -> bool:
@@ -501,7 +552,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/bootstrap": lambda: self.send_json(self._bootstrap()),
             "/api/state": lambda: self.send_json(self._run_state(query)),
             "/api/stations": lambda: self.send_json(stations_payload()),
-            "/api/reports": lambda: self.send_json({"reports": list_reports()}),
+            "/api/reports": lambda: self.send_json(reports_payload()),
         }
         handler = handlers.get(route.path)
         if handler:
@@ -563,13 +614,17 @@ class Handler(BaseHTTPRequestHandler):
             if route.path == "/api/stations/repair":
                 self.send_json(repair_stations())
                 return
-            if route.path == "/api/delete-report":
+            if route.path == "/api/hide-report":
                 selected_date = str(payload.get("selectedDate") or "")
                 if not _DATE_RE.match(selected_date):
                     self.send_json({"error": "Neispravan datum."}, status=HTTPStatus.BAD_REQUEST)
                     return
-                delete_report(selected_date)
-                self.send_json({"ok": True, "reports": list_reports()})
+                hide_report(selected_date)
+                self.send_json({"ok": True, **reports_payload()})
+                return
+            if route.path == "/api/unhide-reports":
+                unhide_reports()
+                self.send_json({"ok": True, **reports_payload()})
                 return
             if route.path == "/api/open-report":
                 selected_date = str(payload.get("selectedDate") or yesterday())
@@ -656,6 +711,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
         cmd, environment, selected_date = build_run_command({**payload, "selectedDate": selected_date})
+        unhide_report(selected_date)
         log_name = start_process(cmd, environment, selected_date=selected_date)
         append_log(
             f"Očitavanje nivoa rezervoara u 17h za datum {selected_date}."

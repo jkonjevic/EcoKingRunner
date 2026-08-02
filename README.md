@@ -390,6 +390,9 @@ tests/
   on the site.
 * **Telemetry pages load slowly** — raise `TELEMETRY_WAIT_MS` in `.env` (default
   10000 ms per location). The run also keeps polling past that wait.
-* **`Nije moguće obrisati izvještaj … Zatvori ga u Excelu`** — the ✕ in
-  **Izvještaji** deletes the file from disk, and Windows will not delete a
-  workbook Excel still has open. Close it and press ✕ again.
+* **A report is missing from Izvještaji** — the list is a live listing of the
+  reports folder (the path is printed under the card title; locally it is the
+  Desktop), minus any row hidden with ✕. ✕ never touches the file, so
+  **Vrati uklonjene** brings the rows back, and re-running a hidden date
+  un-hides it automatically. The hidden dates live in `hidden_reports.json`
+  next to the app.

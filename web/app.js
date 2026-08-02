@@ -85,6 +85,10 @@ const run = {
     $("modeBadge").textContent = bootstrap.cloud ? "Online" : "Lokalno";
     $("dateHint").textContent =
       `${bootstrap.stationCount} aktivnih stanica · template: ${bootstrap.template}`;
+    // The list is a live listing of this folder, so say which one it is.
+    $("reportsPath").textContent =
+      `Izvještaji se povlače iz foldera na putanji: ${bootstrap.reportsLocation}`;
+    $("reportsPath").title = bootstrap.reportsLocation;
 
     // A hosted container has no screen and no Excel to open into.
     $("browserVisibleRow").hidden = bootstrap.cloud;
@@ -196,14 +200,17 @@ const run = {
 
   async refreshReports() {
     const container = $("reportList");
-    const { reports } = await api.get("/api/reports").catch(() => ({ reports: [] }));
+    const { reports, hiddenCount } = await api
+      .get("/api/reports")
+      .catch(() => ({ reports: [], hiddenCount: 0 }));
     container.textContent = "";
     if (!reports.length) {
       const empty = document.createElement("p");
       empty.className = "report-empty";
-      empty.textContent = "Još nema generisanih izvještaja.";
+      empty.textContent = hiddenCount
+        ? "Svi izvještaji su uklonjeni iz liste."
+        : "Još nema generisanih izvještaja.";
       container.appendChild(empty);
-      return;
     }
     for (const report of reports.slice(0, 8)) {
       const row = document.createElement("div");
@@ -224,25 +231,36 @@ const run = {
       const remove = document.createElement("button");
       remove.className = "btn btn-ghost btn-sm btn-remove";
       remove.textContent = "✕";
-      remove.title = `Obriši izvještaj ${report.name}`;
+      remove.title = `Ukloni ${report.name} iz liste (fajl ostaje na disku)`;
       remove.setAttribute("aria-label", remove.title);
-      remove.addEventListener("click", () => this.removeReport(report));
+      remove.addEventListener("click", () => this.hideReport(report));
 
       row.append(date, meta, spacer, download, remove);
       container.appendChild(row);
     }
+
+    if (hiddenCount) {
+      const restore = document.createElement("button");
+      restore.className = "btn btn-ghost btn-sm report-restore";
+      restore.textContent = `Vrati uklonjene (${hiddenCount})`;
+      restore.addEventListener("click", () => this.restoreReports());
+      container.appendChild(restore);
+    }
   },
 
-  async removeReport(report) {
-    // The file is deleted from disk, not just hidden from the list.
-    if (!confirm(`Obrisati izvještaj ${report.name}?\n\nFajl se briše sa diska i ne može se vratiti.`)) return;
+  // Only the row goes away -- the .xlsx stays where it was saved.
+  async hideReport(report) {
     notify($("runMessage"), "");
     try {
-      await api.post("/api/delete-report", { selectedDate: report.date });
-      notify($("runMessage"), `Izvještaj ${report.name} je obrisan.`, "ok");
+      await api.post("/api/hide-report", { selectedDate: report.date });
     } catch (error) {
       notify($("runMessage"), error.message, "error");
     }
+    await this.refreshReports();
+  },
+
+  async restoreReports() {
+    await api.post("/api/unhide-reports").catch(() => {});
     await this.refreshReports();
   },
 };

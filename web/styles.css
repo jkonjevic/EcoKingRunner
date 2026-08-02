@@ -339,6 +339,9 @@ details.card > .group-title:first-of-type { margin-top: 12px; }
 
 /* Reports ----------------------------------------------------------------- */
 
+/* Long Windows paths must wrap instead of stretching the sidebar. */
+.reports-path { margin: -4px 0 10px; font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+
 .report-list { display: grid; gap: 6px; }
 .report-row {
   display: flex;
@@ -355,9 +358,10 @@ details.card > .group-title:first-of-type { margin-top: 12px; }
 .report-row .spacer { flex: 1; }
 .report-empty { color: var(--muted); font-size: 13px; }
 
-/* Deleting is destructive, so it stays quiet until the row is hovered. */
+/* Hides the row only; the file stays on disk, hence no danger colour. */
 .btn-remove { color: var(--muted); padding: 5px 9px; line-height: 1; }
-.btn-remove:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+.btn-remove:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
+.report-restore { justify-self: start; color: var(--muted); }
 
 /* Stations table ---------------------------------------------------------- */
 

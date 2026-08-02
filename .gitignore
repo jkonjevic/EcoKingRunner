@@ -7,6 +7,7 @@ __pycache__/
 .env
 
 # Run artefacts
+hidden_reports.json
 logs/
 debug/
 build/
