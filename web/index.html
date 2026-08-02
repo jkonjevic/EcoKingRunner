@@ -46,21 +46,43 @@
   <main id="view-run" class="view">
     <section class="col-side">
       <div class="card">
-        <h2 class="card-title">Datum izvještaja</h2>
-        <input id="selectedDate" type="date" class="input input-lg">
+        <h2 class="card-title">Datumi izvještaja</h2>
+
+        <details class="cal-wrap" id="calWrap">
+          <summary class="cal-summary">
+            <span id="calSummary">Izaberi datume</span>
+            <span class="cal-summary-hint">Kalendar</span>
+          </summary>
+          <div class="cal">
+            <div class="cal-head">
+              <button id="calPrev" class="btn btn-ghost btn-sm cal-nav" type="button" aria-label="Prethodni mjesec">‹</button>
+              <strong id="calLabel" aria-live="polite"></strong>
+              <button id="calNext" class="btn btn-ghost btn-sm cal-nav" type="button" aria-label="Sljedeći mjesec">›</button>
+            </div>
+            <div class="cal-dow" id="calDow" aria-hidden="true"></div>
+            <div class="cal-grid" id="calGrid" role="grid"></div>
+          </div>
+          <p class="muted cal-help">Klik bira dan, <b>Shift + klik</b> bira raspon. Tačka označava dan koji već ima izvještaj.</p>
+        </details>
+
+        <div id="dateChips" class="date-chips"></div>
         <p class="muted" id="dateHint"></p>
 
         <label class="switch">
           <input id="withTelemetry" type="checkbox" checked>
-          <span><strong>Telemetrija</strong><small>Ako je označeno, „Pokreni obračun“ radi oba koraka jedan za drugim: prvo EcoKing obračun, pa telemetriju (nivoi rezervoara u 17h) u istu tabelu.</small></span>
+          <span class="switch-label">
+            <strong>Telemetrija</strong>
+            <span class="info-icon" tabindex="0" title="Ako je označeno, „Pokreni obračun“ radi oba koraka jedan za drugim: prvo EcoKing obračun, pa telemetriju (nivoi rezervoara u 17h) u istu tabelu.">i</span>
+          </span>
         </label>
 
         <div class="actions">
           <button id="runBtn" class="btn btn-primary btn-block">Pokreni obračun</button>
           <button id="telemetryBtn" class="btn btn-block">Telemetrija</button>
           <button id="stopBtn" class="btn btn-danger btn-block" disabled>Zaustavi</button>
+          <button id="skipDayBtn" class="btn btn-block" hidden disabled>Preskoči tekući dan</button>
         </div>
-        <p class="muted">Dugme „Telemetrija“ pokreće samo drugi korak i dopunjava izvještaj koji već postoji za izabrani datum.</p>
+        <p class="muted">Dugme „Telemetrija“ pokreće samo drugi korak i dopunjava izvještaje koji već postoje za izabrane datume.</p>
         <p id="runMessage" class="notice" role="status" hidden></p>
       </div>
 
@@ -96,7 +118,7 @@
         </label>
         <label class="switch" id="openAfterRow">
           <input id="openAfter" type="checkbox" checked>
-          <span><strong>Otvori Excel po završetku</strong><small>Automatski otvara gotov izvještaj.</small></span>
+          <span><strong>Otvori Excel po završetku</strong><small>Automatski otvara gotov izvještaj. Važi samo kada je izabran jedan dan — za više dana koristi listu rezultata.</small></span>
         </label>
 
         <h3 class="group-title">Telemetrija (nivoi u 17h)</h3>
@@ -114,8 +136,14 @@
       </details>
 
       <div class="card">
-        <h2 class="card-title">Izvještaji</h2>
-        <p class="muted reports-path" id="reportsPath"></p>
+        <div class="card-head">
+          <h2 class="card-title">Izvještaji</h2>
+          <button id="openFolder" class="btn btn-ghost btn-sm" type="button" hidden>📁 Otvori folder</button>
+        </div>
+        <p class="muted reports-path">
+          <span class="info-icon" tabindex="0" title="Izvještaji se povlače iz foldera na putanji ispisanoj ovdje.">i</span>
+          <span id="reportsPath"></span>
+        </p>
         <div id="reportList" class="report-list"></div>
       </div>
     </section>
@@ -123,20 +151,48 @@
     <section class="col-main">
       <div class="stats">
         <div class="stat"><span>Status</span><strong id="statStatus">Spremno</strong></div>
+        <div class="stat" id="statDayCard" hidden><span>Dan</span><strong id="statDay">—</strong></div>
         <div class="stat"><span>Napredak</span><strong id="statProgress">0 / 0</strong></div>
         <div class="stat"><span>Trenutna stanica</span><strong id="statCurrent" title="">—</strong></div>
         <div class="stat"><span>Pokrenuto</span><strong id="statStarted">—</strong></div>
       </div>
+
+      <div id="dayStrip" class="daystrip" hidden></div>
       <div class="progress"><div id="progressBar"></div></div>
+
+      <section id="summaryCard" class="card summary" hidden>
+        <div class="card-head">
+          <h2 class="card-title">Rezultat po danima</h2>
+          <strong id="summaryHeadline" class="summary-headline"></strong>
+        </div>
+        <div id="summaryList" class="summary-list"></div>
+      </section>
+
+      <section id="problems" class="card problems" hidden>
+        <div class="card-head">
+          <h2 class="card-title">Problemi <span id="problemsCount" class="count"></span></h2>
+          <button id="problemsCopy" class="btn btn-ghost btn-sm" type="button">Kopiraj spisak</button>
+        </div>
+        <div id="problemsList" class="problems-list"></div>
+      </section>
 
       <div class="console-head">
         <h2 class="card-title">Log izvršenja</h2>
         <div class="console-tools">
+          <div class="filters" role="group" aria-label="Filter logova">
+            <button class="filter is-active" data-level="all" type="button">Sve</button>
+            <button class="filter" data-level="error" type="button">Greške <span data-count="error"></span></button>
+            <button class="filter" data-level="warning" type="button">+ upozorenja <span data-count="warning"></span></button>
+          </div>
+          <label class="mini-check" id="dayFilterRow" hidden>
+            Dan
+            <select id="dayFilter" class="mini-select"><option value="all">svi</option></select>
+          </label>
           <label class="mini-check"><input id="autoScroll" type="checkbox" checked> Prati kraj</label>
           <button id="copyLog" class="btn btn-ghost btn-sm">Kopiraj</button>
         </div>
       </div>
-      <pre id="log" class="console" tabindex="0"></pre>
+      <div id="log" class="console" tabindex="0"></div>
     </section>
   </main>
 

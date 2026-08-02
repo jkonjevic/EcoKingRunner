@@ -31,6 +31,8 @@ LEGACY_STATIONS_FILE = "herceg_novi_stations.json"
 DEFAULT_CITY_PREFIXES = ("Herceg Novi",)
 
 _SERIAL_PREFIX_RE = re.compile(r"^\s*\d{6,}\s*[-–]\s*")
+#: The site repeats the serial in brackets at the end of a dropdown entry.
+_SERIAL_SUFFIX_RE = re.compile(r"\s*\(\s*\d{6,}\s*\)\s*$")
 _CODE_PREFIX_RE = re.compile(r"^\(\s*[A-Za-zČĆŠĐŽčćšđž0-9\- ]{1,12}\s*\)\s*")
 _LEGACY_DIRECTION_RE = re.compile(r"\s*-\s*([IU])\s*$", re.IGNORECASE)
 
@@ -122,11 +124,16 @@ class Issue:
 def device_label(option_text: str, city_prefixes: Iterable[str] = DEFAULT_CITY_PREFIXES) -> str:
     """Reduce a raw site dropdown entry to the label stored in the registry.
 
-    ``"358004092234384 - Herceg Novi - (R-BA) Bajer 1 - U"`` becomes
-    ``"(R-BA) Bajer 1 - U"``.
+    ``"358004092234384 - Herceg Novi - (R-BA) Bajer 1 - U (358004092234384)"``
+    becomes ``"(R-BA) Bajer 1 - U"``.
+
+    Applying this to a stored label too is what lets someone paste a dropdown
+    entry straight off the site: the reduction is idempotent, so a label that
+    was already written the short way comes back unchanged.
     """
     text = re.sub(r"\s+", " ", str(option_text or "")).strip()
     text = _SERIAL_PREFIX_RE.sub("", text)
+    text = _SERIAL_SUFFIX_RE.sub("", text)
     for city in city_prefixes:
         # The city is the last prefix segment, so cut everything up to and
         # including it. That also drops placeholders the old file used in place
@@ -147,9 +154,13 @@ def score_device_match(search: str, option_label_text: str) -> int:
 
     Higher is better, ``0`` means "not this one". The tiers are deliberately far
     apart so that a tie means genuine ambiguity rather than rounding.
+
+    Both sides go through :func:`device_label` first, so a stored name pasted
+    whole off the site -- serial, city and all -- is compared against the same
+    reduction as the entry it came from instead of scoring zero.
     """
-    wanted = normalize(search)
-    found = normalize(option_label_text)
+    wanted = normalize(device_label(search))
+    found = normalize(device_label(option_label_text))
     if not wanted or not found:
         return 0
     if wanted == found:

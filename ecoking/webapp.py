@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -115,6 +115,49 @@ def yesterday() -> str:
 # --------------------------------------------------------------------------- #
 
 
+#: One report per day, so a run over several days is a queue of the runs that
+#: already worked -- the scraper still sees exactly one --selected-date.
+MAX_BATCH_DAYS = 14
+
+#: Written between days so the log stays one readable stream and the UI can
+#: still tell which day a line belongs to. Single-day runs emit no separator,
+#: which keeps their log byte-identical to what it has always been.
+DAY_SEPARATOR = "───────── DAN {index}/{total} · {date} ─────────"
+
+
+@dataclass
+class DayRun:
+    """One date in a batch: its own progress, outcome and list of problems."""
+
+    date: str
+    status: str = "pending"  # pending | running | ok | failed | stopped | skipped
+    return_code: int | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    done: int = 0
+    total: int = 0
+    current: str = ""
+    errors: int = 0
+    warnings: int = 0
+    failures: list[logtext.Failure] = field(default_factory=list)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "date": self.date,
+            "status": self.status,
+            "returnCode": self.return_code,
+            "startedAt": self.started_at,
+            "finishedAt": self.finished_at,
+            "done": self.done,
+            "total": self.total,
+            "current": self.current,
+            "errors": self.errors,
+            "warnings": self.warnings,
+            "failures": [failure.to_json() for failure in self.failures],
+            "reportReady": report_path(self.date).exists(),
+        }
+
+
 @dataclass
 class RunState:
     process: subprocess.Popen[str] | None = None
@@ -123,10 +166,41 @@ class RunState:
     log_path: Path | None = None
     lines: list[str] = field(default_factory=list)
     started_at: str | None = None
-    selected_date: str | None = None
-    done: int = 0
-    total: int = 0
-    current: str = ""
+    days: list[DayRun] = field(default_factory=list)
+    index: int = 0
+    #: Set by "Zaustavi": the running day is killed and the rest are skipped.
+    cancelled: bool = False
+    #: Set by "Preskoči dan": only the running day is killed.
+    stop_current: bool = False
+
+    @property
+    def active(self) -> DayRun | None:
+        """The day being run, or the last one touched once the batch is over."""
+        if not self.days:
+            return None
+        return self.days[min(self.index, len(self.days) - 1)]
+
+    # The single-day fields the UI has always polled. They now describe the
+    # active day, so a batch of one behaves exactly as it did before.
+    @property
+    def selected_date(self) -> str | None:
+        day = self.active
+        return day.date if day else None
+
+    @property
+    def done(self) -> int:
+        day = self.active
+        return day.done if day else 0
+
+    @property
+    def total(self) -> int:
+        day = self.active
+        return day.total if day else 0
+
+    @property
+    def current(self) -> str:
+        day = self.active
+        return day.current if day else ""
 
 
 STATE = RunState()
@@ -137,27 +211,39 @@ def append_log(line: str) -> None:
     translated = logtext.translate(line)
     if not translated:
         return
+    # Severity and failures are read off the scraper's own English wording,
+    # which is stable, rather than off the translation shown in the console.
+    severity = logtext.classify(line)
+    failure = logtext.parse_failure(line)
     with STATE_LOCK:
         STATE.lines.append(translated)
+        day = STATE.active if STATE.running else None
+        if day:
+            if severity == "error":
+                day.errors += 1
+            elif severity == "warning":
+                day.warnings += 1
+            if failure:
+                day.failures.append(failure)
         progress = _STATION_LINE_RE.search(translated)
-        if progress:
-            STATE.done = int(progress.group(1))
-            STATE.total = int(progress.group(2))
+        if progress and day:
+            day.done = int(progress.group(1))
+            day.total = int(progress.group(2))
             # Two passes report progress: EcoKing stations ("Stanica=") and the
             # telemetry levels ("Lokacija="). The counter restarts for the
             # second one, which is what the log lines say too.
             marker = next((name for name in ("Stanica=", "Lokacija=") if name in translated), None)
             if marker:
                 label = translated.split(marker, 1)[-1].split(", Excel red=", 1)[0]
-                STATE.current = label.strip()
+                day.current = label.strip()
         log_path = STATE.log_path
     if log_path:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(translated + "\n")
 
 
-def start_process(cmd: list[str], environment: dict[str, str], selected_date: str | None) -> str:
-    """Reset the log, spawn the scraper, and stream its output into the state."""
+def start_batch(dates: list[str], config: dict[str, Any]) -> str:
+    """Reset the log and run one scraper process per date, in order."""
     with STATE_LOCK:
         if STATE.running:
             raise RuntimeError("Obračun je već u toku.")
@@ -166,17 +252,93 @@ def start_process(cmd: list[str], environment: dict[str, str], selected_date: st
         STATE.log_path = log_dir() / f"ecoking-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
         STATE.started_at = datetime.now().strftime("%d.%m.%Y. %H:%M:%S")
         STATE.running = True
-        STATE.done = 0
-        STATE.total = 0
-        STATE.current = ""
-        STATE.selected_date = selected_date
+        STATE.cancelled = False
+        STATE.stop_current = False
+        STATE.days = [DayRun(date=date) for date in dates]
+        STATE.index = 0
         log_path = STATE.log_path
 
-    threading.Thread(target=_pump_process, args=(cmd, environment), daemon=True).start()
+    threading.Thread(target=_pump_batch, args=(config,), daemon=True).start()
     return str(log_path.name)
 
 
-def _pump_process(cmd: list[str], environment: dict[str, str]) -> None:
+def _pump_batch(config: dict[str, Any]) -> None:
+    """Walk the queue. A day that fails is recorded, not allowed to end it."""
+    try:
+        with STATE_LOCK:
+            total = len(STATE.days)
+        for index in range(total):
+            with STATE_LOCK:
+                if STATE.cancelled:
+                    for pending in STATE.days[index:]:
+                        pending.status = "skipped"
+                    break
+                STATE.index = index
+                day = STATE.days[index]
+                day.status = "running"
+                day.started_at = datetime.now().strftime("%d.%m.%Y. %H:%M:%S")
+            if total > 1:
+                append_log("")
+                append_log(DAY_SEPARATOR.format(index=index + 1, total=total, date=day.date))
+            _announce_day(day.date, bool(config.get("onlyTelemetry")))
+
+            cmd, environment, _ = build_run_command({**config, "selectedDate": day.date})
+            return_code = _pump_process(cmd, environment)
+
+            with STATE_LOCK:
+                stopped = STATE.stop_current or STATE.cancelled
+                STATE.stop_current = False
+                day.return_code = return_code
+                day.finished_at = datetime.now().strftime("%d.%m.%Y. %H:%M:%S")
+                day.status = "ok" if return_code == 0 else "stopped" if stopped else "failed"
+            append_log(_day_verdict(day))
+            if return_code == 0:
+                unhide_report(day.date)
+    finally:
+        with STATE_LOCK:
+            STATE.running = False
+            STATE.process = None
+            failed = [day for day in STATE.days if day.status not in {"ok"}]
+            STATE.return_code = 0 if not failed else 1
+            summary = _batch_summary(STATE.days)
+        if summary:
+            append_log(summary)
+
+
+def _announce_day(selected_date: str, only_telemetry: bool) -> None:
+    append_log(
+        f"Očitavanje nivoa rezervoara u 17h za datum {selected_date}."
+        if only_telemetry
+        else f"Generisanje izvještaja za datum {selected_date}."
+    )
+    append_log(f"Izlazni fajl: {report_path(selected_date).name}")
+
+
+def _day_verdict(day: DayRun) -> str:
+    if day.status == "ok":
+        return f"Obračun za {day.date} je završen uspješno."
+    if day.status == "stopped":
+        return f"Obračun za {day.date} je zaustavljen."
+    return f"Obračun za {day.date} je završen sa greškom. Kod izlaza: {day.return_code}"
+
+
+def _batch_summary(days: list[DayRun]) -> str:
+    """One closing line for a multi-day run; single days already said it all."""
+    if len(days) < 2:
+        return ""
+    ok = sum(1 for day in days if day.status == "ok")
+    failed = [day.date for day in days if day.status == "failed"]
+    skipped = [day.date for day in days if day.status in {"skipped", "stopped"}]
+    parts = [f"ZBIRNO: {ok} od {len(days)} dana uspješno."]
+    if failed:
+        parts.append(f"Sa greškom: {', '.join(failed)}.")
+    if skipped:
+        parts.append(f"Nije pokrenuto: {', '.join(skipped)}.")
+    return " ".join(parts)
+
+
+def _pump_process(cmd: list[str], environment: dict[str, str]) -> int:
+    """Spawn one scraper process and stream its output into the state."""
     return_code = 1
     try:
         process = subprocess.Popen(
@@ -198,16 +360,45 @@ def _pump_process(cmd: list[str], environment: dict[str, str]) -> None:
         return_code = process.wait()
     except Exception as exc:  # pragma: no cover - depends on the OS
         append_log(f"GREŠKA: Pokretanje procesa nije uspjelo: {exc}")
-
     with STATE_LOCK:
-        STATE.running = False
         STATE.process = None
-        STATE.return_code = return_code
-    append_log(
-        "Obračun je završen uspješno."
-        if return_code == 0
-        else f"Obračun je završen sa greškom. Kod izlaza: {return_code}"
-    )
+    return return_code
+
+
+def selected_dates(payload: dict[str, Any]) -> list[str]:
+    """The dates a run covers: deduplicated, ascending, validated as a whole.
+
+    A batch is checked before any of it starts, because discovering a bad date
+    on day three of three -- twenty minutes in -- helps nobody.
+    """
+    raw = payload.get("selectedDates")
+    if isinstance(raw, list) and raw:
+        candidates = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        candidates = [str(payload.get("selectedDate") or yesterday()).strip()]
+
+    ordered = sorted(dict.fromkeys(candidates))
+    if not ordered:
+        raise ValueError("Izaberi bar jedan datum.")
+    if len(ordered) > MAX_BATCH_DAYS:
+        raise ValueError(f"Najviše {MAX_BATCH_DAYS} dana odjednom; izabrano je {len(ordered)}.")
+
+    today = datetime.now().date()
+    problems = []
+    for date in ordered:
+        if not _DATE_RE.match(date):
+            problems.append(f"{date}: datum mora biti u formatu YYYY-MM-DD.")
+            continue
+        try:
+            parsed = datetime.strptime(date, ISO_DATE).date()
+        except ValueError:
+            problems.append(f"{date}: datum ne postoji.")
+            continue
+        if parsed > today:
+            problems.append(f"{date}: datum ne može biti u budućnosti.")
+    if problems:
+        raise ValueError("\n".join(problems))
+    return ordered
 
 
 def build_run_command(config: dict[str, Any]) -> tuple[list[str], dict[str, str], str]:
@@ -300,7 +491,13 @@ def save_stations_payload(payload: dict[str, Any]) -> dict[str, Any]:
     incoming = payload.get("stations")
     if not isinstance(incoming, list):
         raise ValueError("Očekivana je lista stanica.")
-    stations = [Station.from_json(item) for item in incoming if isinstance(item, dict)]
+    # Pasting a dropdown entry straight off the site is the obvious thing to do
+    # when a name is ambiguous, so accept it and store the short form.
+    stations = [
+        replace(Station.from_json(item), uredjaj=registry.device_label(str(item.get("uredjaj") or "").strip()))
+        for item in incoming
+        if isinstance(item, dict)
+    ]
     rows = load_template_rows()
     issues = registry.validate(stations, rows)
     blocking = [issue for issue in issues if issue.severity == "error"]
@@ -406,6 +603,19 @@ def unhide_report(selected_date: str) -> None:
         save_hidden_reports((hidden - {selected_date}) & all_report_dates())
 
 
+def _spawn_first_available(commands: list[list[str]]) -> bool:
+    """Try each desktop opener in turn; the first one installed wins."""
+    for command in commands:
+        if not shutil.which(command[0]):
+            continue
+        try:
+            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except OSError:
+            continue
+    return False
+
+
 def open_in_excel(path: Path) -> bool:
     """Open a finished report in the desktop spreadsheet app. Local runs only."""
     if is_cloud() or not path.exists():
@@ -423,15 +633,46 @@ def open_in_excel(path: Path) -> bool:
         ["gio", "open", str(path)],
         ["libreoffice", "--calc", str(path)],
     ]
-    for command in commands:
-        if not shutil.which(command[0]):
-            continue
-        try:
-            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return True
-        except OSError:
-            continue
+    if _spawn_first_available(commands):
+        return True
     append_log(f"UPOZORENJE: Excel nije otvoren automatski. Fajl je na: {path}")
+    return False
+
+
+def open_reports_folder(selected_date: str | None = None) -> bool:
+    """Show the reports folder in the file manager, one report highlighted.
+
+    A hosted container has no file manager, and the browser download is the
+    only way to a report there, so this is a local-only convenience.
+    """
+    if is_cloud():
+        return False
+    directory = reports_dir()
+    target = report_path(selected_date) if selected_date else None
+    if target and not target.exists():
+        target = None
+
+    if sys.platform.startswith("win"):
+        try:
+            if target:
+                # Passing the argument as one string keeps Explorer's
+                # "/select,<path>" syntax intact -- a list would quote the
+                # comma-joined pair apart and open the wrong thing.
+                subprocess.Popen(f'explorer /select,"{target}"')
+                return True
+            os.startfile(str(directory))  # type: ignore[attr-defined]
+            return True
+        except OSError as exc:
+            append_log(f"UPOZORENJE: Nije moguće otvoriti folder: {exc}")
+            return False
+
+    if sys.platform == "darwin":
+        commands = [["open", "-R", str(target)]] if target else [["open", str(directory)]]
+    else:
+        commands = [["xdg-open", str(directory)], ["gio", "open", str(directory)]]
+    if _spawn_first_available(commands):
+        return True
+    append_log(f"UPOZORENJE: Folder nije otvoren automatski. Putanja je: {directory}")
     return False
 
 
@@ -606,7 +847,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._start_run(payload)
                 return
             if route.path == "/api/stop":
-                self._stop()
+                self._stop(payload)
                 return
             if route.path == "/api/stations":
                 self.send_json(save_stations_payload(payload))
@@ -625,6 +866,19 @@ class Handler(BaseHTTPRequestHandler):
             if route.path == "/api/unhide-reports":
                 unhide_reports()
                 self.send_json({"ok": True, **reports_payload()})
+                return
+            if route.path == "/api/open-folder":
+                selected_date = str(payload.get("selectedDate") or "")
+                if selected_date and not _DATE_RE.match(selected_date):
+                    self.send_json({"error": "Neispravan datum."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                if open_reports_folder(selected_date or None):
+                    self.send_json({"ok": True})
+                else:
+                    self.send_json(
+                        {"error": f"Folder nije otvoren. Putanja je: {reports_dir()}"},
+                        status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    )
                 return
             if route.path == "/api/open-report":
                 selected_date = str(payload.get("selectedDate") or yesterday())
@@ -667,6 +921,7 @@ class Handler(BaseHTTPRequestHandler):
         cursor = _clamp(query.get("cursor", ["0"])[0], 0, 0, 10_000_000)
         with STATE_LOCK:
             lines = STATE.lines[cursor:]
+            days = [day.to_json() for day in STATE.days]
             payload = {
                 "running": STATE.running,
                 "returnCode": STATE.return_code,
@@ -674,31 +929,37 @@ class Handler(BaseHTTPRequestHandler):
                 "lines": lines,
                 "logFile": STATE.log_path.name if STATE.log_path else "",
                 "startedAt": STATE.started_at,
+                # The single-day keys below describe the active day, so the
+                # stats tiles and progress bar keep working unchanged.
                 "selectedDate": STATE.selected_date,
                 "done": STATE.done,
                 "total": STATE.total,
                 "current": STATE.current,
+                "days": days,
+                "batch": {
+                    "total": len(days),
+                    "index": min(STATE.index, max(0, len(days) - 1)),
+                    "ok": sum(1 for day in days if day["status"] == "ok"),
+                    "failed": sum(1 for day in days if day["status"] == "failed"),
+                    "problems": sum(len(day["failures"]) for day in days),
+                },
             }
         if not payload["running"] and payload["returnCode"] == 0 and payload["selectedDate"]:
             payload["reportReady"] = report_path(str(payload["selectedDate"])).exists()
         return payload
 
     def _start_run(self, payload: dict[str, Any]) -> None:
-        selected_date = str(payload.get("selectedDate") or yesterday())
-        if not _DATE_RE.match(selected_date):
-            raise ValueError("Datum mora biti u formatu YYYY-MM-DD.")
-        if datetime.strptime(selected_date, ISO_DATE).date() > datetime.now().date():
-            raise ValueError("Datum ne može biti u budućnosti.")
+        dates = selected_dates(payload)
         if not TEMPLATE_PATH.exists():
             raise ValueError(f"Nedostaje master template: {TEMPLATE_PATH.name}")
 
-        only_telemetry = bool(payload.get("onlyTelemetry"))
-        if only_telemetry:
+        if bool(payload.get("onlyTelemetry")):
             # This pass only writes into a workbook a full run already made,
-            # so the station list is irrelevant -- but the report must exist.
-            if not report_path(selected_date).exists():
+            # so the station list is irrelevant -- but every report must exist.
+            missing = [date for date in dates if not report_path(date).exists()]
+            if missing:
                 raise ValueError(
-                    f"Nema izvještaja za {selected_date}. Prvo pokreni obračun, pa onda nivoe."
+                    f"Nema izvještaja za: {', '.join(missing)}. Prvo pokreni obračun, pa onda nivoe."
                 )
         else:
             rows = load_template_rows()
@@ -710,22 +971,31 @@ class Handler(BaseHTTPRequestHandler):
                     "Lista stanica ima greške:\n" + "\n".join(f"{i.station}: {i.message}" for i in blocking)
                 )
 
-        cmd, environment, selected_date = build_run_command({**payload, "selectedDate": selected_date})
-        unhide_report(selected_date)
-        log_name = start_process(cmd, environment, selected_date=selected_date)
-        append_log(
-            f"Očitavanje nivoa rezervoara u 17h za datum {selected_date}."
-            if only_telemetry
-            else f"Generisanje izvještaja za datum {selected_date}."
-        )
-        append_log(f"Izlazni fajl: {report_path(selected_date).name}")
-        self.send_json({"ok": True, "logFile": log_name})
+        for date in dates:
+            unhide_report(date)
+        log_name = start_batch(dates, payload)
+        if len(dates) > 1:
+            append_log(f"Obračun za {len(dates)} dana: {', '.join(dates)}.")
+        self.send_json({"ok": True, "logFile": log_name, "dates": dates})
 
-    def _stop(self) -> None:
+    def _stop(self, payload: dict[str, Any]) -> None:
+        # "batch" (the default, and what a single-day run has always done)
+        # ends the whole queue; "day" kills the running day and moves on.
+        scope = str(payload.get("scope") or "batch")
         with STATE_LOCK:
             process = STATE.process
-        if process and process.poll() is None:
+            remaining = len(STATE.days) - STATE.index - 1
+            if scope == "day":
+                STATE.stop_current = True
+            else:
+                STATE.cancelled = True
+        if scope == "day":
+            append_log("Preskakanje tekućeg dana je zatraženo.")
+        elif remaining > 0:
+            append_log(f"Zaustavljanje je zatraženo; preostalih {remaining} dana se preskače.")
+        else:
             append_log("Zaustavljanje procesa je zatraženo.")
+        if process and process.poll() is None:
             process.terminate()
             try:
                 process.wait(timeout=8)

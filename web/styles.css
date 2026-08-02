@@ -167,7 +167,10 @@ body {
   align-items: start;
 }
 
-.col-side { display: grid; gap: 12px; }
+/* min-width:0 keeps a long path or a wide row inside the column instead of
+   letting it push the sidebar over the log. */
+.col-side { display: grid; gap: 12px; min-width: 0; }
+.col-side .card { min-width: 0; overflow: hidden; }
 .col-main { display: grid; gap: 12px; align-content: start; min-width: 0; }
 .col-full { grid-column: 1 / -1; display: grid; gap: 12px; min-width: 0; }
 
@@ -243,6 +246,107 @@ summary::-webkit-details-marker { display: none; }
 
 .actions { display: grid; gap: 8px; margin-top: 14px; }
 
+.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.card-head .card-title { margin: 0; }
+.card-head > .btn { margin-left: auto; }
+
+/* Calendar ---------------------------------------------------------------- */
+
+/* Collapsed by default: the date is usually yesterday, and the chips below
+   already say what is picked. Opening it makes the grid comfortably bigger. */
+.cal-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-2);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.cal-summary::-webkit-details-marker { display: none; }
+.cal-summary::before { content: "▸"; color: var(--muted); transition: transform .15s ease; }
+.cal-wrap[open] > .cal-summary::before { transform: rotate(90deg); }
+.cal-wrap[open] > .cal-summary { margin-bottom: 8px; }
+.cal-summary-hint { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--accent); }
+
+.cal { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: var(--surface-2); }
+.cal-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.cal-head strong { font-size: 13.5px; text-transform: capitalize; }
+.cal-nav { padding: 2px 9px; font-size: 16px; line-height: 1.2; color: var(--muted); }
+
+.cal-dow, .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.cal-dow {
+  margin: 8px 0 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: center;
+}
+
+.cal-day {
+  position: relative;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  padding: 10px 0;
+  cursor: pointer;
+}
+.cal-day:hover:not(:disabled) { background: var(--surface); border-color: var(--line); }
+.cal-day:disabled { opacity: .28; cursor: not-allowed; }
+.cal-day.is-today { font-weight: 700; box-shadow: inset 0 0 0 1px var(--line); }
+.cal-day.is-on,
+/* Outranks the hover rule above, which would otherwise put white on white. */
+.cal-day.is-on:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+/* A dot means a report for that day already exists, so a re-run overwrites. */
+.cal-day.has-report::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 4px;
+  transform: translateX(-50%);
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.cal-day.is-on.has-report::after { background: var(--accent-ink); }
+.cal-help { margin-top: 8px; }
+.cal-help b { font-weight: 700; color: var(--ink); }
+
+.date-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.date-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.date-chip b { font-weight: 700; opacity: .6; }
+.date-chip:hover b { opacity: 1; }
+.date-chip.is-clear { border-color: var(--line); background: transparent; color: var(--muted); }
+
 /* Splits "Napredna podešavanja" into the pass each setting belongs to. */
 .group-title {
   margin: 16px 0 8px;
@@ -273,6 +377,36 @@ details.card > .group-title:first-of-type { margin-top: 12px; }
 .switch input { width: 17px; height: 17px; margin: 2px 0 0; accent-color: var(--accent); }
 .switch strong { display: block; font-size: 13.5px; font-weight: 600; }
 .switch small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+/* space-between pushes the icon to the row's right edge, clear of the label. */
+.switch-label { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.switch-label strong { margin: 0; }
+
+/* A compact "hover for details" affordance, used where a full sentence would
+   otherwise sit inline every time -- the explanation is still there, just on
+   demand rather than always taking up space. */
+.info-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-style: normal;
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1;
+  cursor: help;
+  user-select: none;
+}
+.info-icon:hover, .info-icon:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+  outline: none;
+}
 
 .mini-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
 .mini-check input { accent-color: var(--accent); }
@@ -319,9 +453,123 @@ details.card > .group-title:first-of-type { margin-top: 12px; }
 .progress { height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
 .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .25s ease; }
 
-.console-head { display: flex; align-items: center; gap: 12px; }
+/* One segment per day of a batch, coloured by how that day ended. */
+.daystrip { display: flex; gap: 4px; }
+.dayseg {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 5px 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dayseg:hover { border-color: var(--accent); }
+.dayseg.is-running { border-color: var(--warn); color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.dayseg.is-ok { border-color: var(--ok); color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.dayseg.is-failed { border-color: var(--danger); color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.dayseg.is-stopped, .dayseg.is-skipped { opacity: .55; }
+
+/* Rezultat po danima ------------------------------------------------------ */
+
+.summary-headline { margin-left: auto; font-size: 13px; font-variant-numeric: tabular-nums; }
+.summary-headline.is-ok { color: var(--ok); }
+.summary-headline.is-error { color: var(--danger); }
+.summary-list { display: grid; gap: 6px; }
+.summary-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.summary-row b { font-variant-numeric: tabular-nums; }
+.summary-row small { color: var(--muted); }
+.summary-icon { font-weight: 700; width: 14px; text-align: center; }
+.summary-row.is-ok .summary-icon { color: var(--ok); }
+.summary-row.is-failed .summary-icon { color: var(--danger); }
+.summary-row.is-failed { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+
+/* Problemi ---------------------------------------------------------------- */
+
+.problems .count { color: var(--danger); }
+.problems-list { display: grid; gap: 12px; }
+.problem-group { display: grid; gap: 4px; }
+.problem-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.problem-head small { color: var(--muted); }
+.problem-icon { font-weight: 700; }
+.problem-icon.is-failed { color: var(--danger); }
+.problem-icon.is-ok { color: var(--ok); }
+
+.problem {
+  display: grid;
+  grid-template-columns: 14px minmax(0, auto) auto 1fr;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.problem:hover { border-color: var(--accent); }
+.problem.is-error { border-left-color: var(--danger); }
+.problem.is-warning { border-left-color: var(--warn); }
+.problem.is-error .problem-mark { color: var(--danger); }
+.problem.is-warning .problem-mark { color: var(--warn); }
+.problem b { font-size: 12.5px; }
+.problem small { color: var(--muted); white-space: nowrap; }
+.problem-reason { color: var(--muted); overflow-wrap: anywhere; }
+
+@media (max-width: 620px) {
+  .problem { grid-template-columns: 14px 1fr; }
+  .problem small, .problem-reason { grid-column: 2; }
+}
+
+/* Console ----------------------------------------------------------------- */
+
+.console-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .console-head .card-title { margin: 0; }
-.console-tools { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.console-tools { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+.filters { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.filter {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 4px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.filter:hover { color: var(--ink); }
+.filter.is-active { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+.filter span { color: var(--danger); }
+
+.mini-select {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 3px 6px;
+}
 
 .console {
   margin: 0;
@@ -337,30 +585,49 @@ details.card > .group-title:first-of-type { margin-top: 12px; }
   word-break: break-word;
 }
 
+.log-line { min-height: 1.6em; }
+.log-line.is-error { color: #ff9d92; }
+.log-line.is-warning { color: #e8bd6d; }
+.log-line.is-empty { color: var(--muted); font-style: italic; }
+
 /* Reports ----------------------------------------------------------------- */
 
 /* Long Windows paths must wrap instead of stretching the sidebar. */
-.reports-path { margin: -4px 0 10px; font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.reports-path {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: -4px 0 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.reports-path .info-icon { align-self: center; }
+.reports-path span:last-child { min-width: 0; overflow-wrap: anywhere; }
 
-.report-list { display: grid; gap: 6px; }
+.report-list { display: grid; gap: 6px; min-width: 0; }
 .report-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 9px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--surface-2);
   font-size: 13px;
 }
-.report-row b { font-variant-numeric: tabular-nums; }
-.report-row small { color: var(--muted); }
-.report-row .spacer { flex: 1; }
+/* Date over timestamp, so the three buttons always fit the narrow sidebar
+   instead of pushing the card over the log column. */
+.report-meta { display: grid; flex: 1 1 auto; min-width: 0; }
+.report-meta b { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.report-meta small { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.report-actions { display: flex; flex: none; align-items: center; gap: 4px; }
 .report-empty { color: var(--muted); font-size: 13px; }
 
 /* Hides the row only; the file stays on disk, hence no danger colour. */
 .btn-remove { color: var(--muted); padding: 5px 9px; line-height: 1; }
 .btn-remove:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
+.btn-reveal { padding: 5px 8px; line-height: 1; }
 .report-restore { justify-self: start; color: var(--muted); }
 
 /* Stations table ---------------------------------------------------------- */

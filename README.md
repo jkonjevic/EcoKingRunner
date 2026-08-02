@@ -15,7 +15,7 @@ There are two ways to run it:
 
 ## How a run works
 
-1. You pick a date.
+1. You pick a date — or several, see below.
 2. For every station in `stations.json`, the scraper searches the site for the
    device, opens its diagram, and reads the 30-day total plus the 15-minute
    min/max.
@@ -25,6 +25,57 @@ There are two ways to run it:
 4. A second pass opens the telemetry site, reads each reservoir's level at
    17:00 on the same date, and fills `NIVO REZERVOARA U 17h` in the report just
    written. See below.
+
+---
+
+## Several days at once
+
+In the web UI the date is a month grid, folded away behind **Kalendar** so the
+usual one-day run stays a single click. Open it and: **click** picks a day,
+**Shift+click** picks a range from the last one you clicked, and a second click
+takes a day back out — so three consecutive days and three scattered ones are
+the same gesture. A dot under a day means a report for it already exists, so
+re-running it overwrites that file. Up to 14 days per run. Whatever is picked
+shows as chips under the calendar, and on the closed summary.
+
+Nothing about a day changes because it is part of a batch: it is still one
+`ecoking_daily.py --selected-date` process writing one
+`EcoKing_Report_<date>.xlsx`. The days simply run **one after another** —
+overlapping them would mean several logins and several browsers against the
+same site. Pick one day and the screen is exactly what it always was.
+
+Every date is checked before the first one starts, so a typo cannot surface
+twenty minutes in. After that:
+
+* **a day that fails does not stop the queue** — that is the point; the other
+  days are still worth having;
+* **Zaustavi** ends the whole run and marks the days that never started as
+  *preskočeno*;
+* **Preskoči tekući dan** drops only the day in progress and moves on.
+
+When it is done, *Rezultat po danima* lists each day with its outcome and a
+**Ponovi** button — which is just a one-day run of the same thing.
+
+### Seeing what failed
+
+Failures are pulled out of the run's own report lines and grouped by day in the
+**Problemi** panel: the device or location, its Excel row, and the reason.
+A red ✕ is a station that produced nothing; an amber ⚠ is a gap — `NO DATA`, or
+a 17h level that could not be read — in a report that is otherwise finished.
+
+The console keeps every line, and the **Sve / Greške / + upozorenja** filter
+plus the **Dan** dropdown narrow it down; *Kopiraj* copies whatever is showing,
+so sending on just the errors is one click. Severity comes from the log level
+the scraper already prints, so nothing new has to be parsed by hand.
+
+### A note on the language
+
+`ecoking_daily.py` logs in English and `ecoking/logtext.py` translates on the
+way to the screen — including the reason inside a `NEUSPJEH` line, which is
+exception text and so nests (`translate_reason`). Keep it that way when adding
+messages: the scraper *branches on its own English wording* to tell a failure
+from missing data, so translating at the source would quietly change which
+bucket a station lands in. `tests/test_batch_run.py` checks the coverage.
 
 ---
 
@@ -66,10 +117,10 @@ In the web UI (**Obračun**):
 
 * **☑ Telemetrija** — on by default. Leave it checked and *Pokreni obračun*
   runs both passes back to back, into one file.
-* **Telemetrija** (button) — runs only this pass, over the report that already
-  exists for the selected date. Use it when the levels failed but the
-  consumption numbers are fine. It refuses if there is no report for that date
-  yet, rather than making a half-empty one.
+* **Telemetrija** (button) — runs only this pass, over the reports that already
+  exist for the selected dates. Use it when the levels failed but the
+  consumption numbers are fine. It refuses, naming the dates, if any of them has
+  no report yet, rather than making a half-empty one.
 
 **Napredna podešavanja** is split by pass. Workers, limit, chart wait, search
 wait and *Prikaži browser* drive the EcoKing scrape only; the telemetry pass has
@@ -114,7 +165,9 @@ python -m ecoking.telemetry --workbook "EcoKing_Report_2026-07-31.xlsx" \
   template exactly. That pair is unique, so it picks the row with no guessing.
 * `uredjaj` is the device name **as it reads on the EcoKing site, without the
   serial number and without `Herceg Novi`**. Serial numbers are not used
-  anywhere any more.
+  anywhere any more. Pasting a whole dropdown entry
+  (`358004092223510 - Herceg Novi - (R-PO) Podi - I (358004092223510)`) works
+  too — saving from **Stanice** reduces it to `(R-PO) Podi - I`.
 * `"enabled": false` keeps an entry in the file but skips it during a run.
 
 ### Adding or changing an entry
@@ -124,7 +177,8 @@ Open the web UI → **Stanice**:
 * **Red u Excel tabeli** is a dropdown of the real template rows, so it is not
   possible to point an entry at a row that does not exist.
 * **Naziv uređaja** is typed by hand — the device name as it reads on the
-  EcoKing site, without the serial number and without `Herceg Novi`.
+  EcoKing site, without the serial number and without `Herceg Novi`. Pasting
+  the site's full dropdown entry is fine; it is shortened when you save.
 * **Sačuvaj** validates before writing. Blocking problems (no such row, two
   entries on one row, empty device name) are refused; the rest show as warnings.
 
@@ -360,7 +414,7 @@ Ship the whole `dist\EcoKingRunner` folder, not just the EXE. It has to contain
 ecoking/
   stations.py    station registry: file format, template rows, validation
   webapp.py      web UI server and JSON API
-  logtext.py     English log lines -> Serbian, shared by both UIs
+  logtext.py     English log lines -> Montenegrin, shared by both UIs
   telemetry.py   second pass: 17h reservoir levels
   check.py       python -m ecoking.check
 web/             the web UI (index.html, styles.css, app.js)
@@ -378,7 +432,8 @@ tests/
   bracketed prefix in **Stanice**.
 * **`Nijedan rezultat ne odgovara nazivu`** — the name does not exist on the
   site as spelled. Open a station's diagram on the site and copy its exact
-  label into **Stanice**.
+  label into **Stanice**; the serial and `Herceg Novi` are stripped on save, so
+  copying the whole dropdown entry is fine.
 * **Chart extraction fails** — a screenshot and an HTML snapshot are written to
   `debug/`. If the site's markup changed, set the matching `*_SELECTOR` in
   `.env` (see `.env.example`).
@@ -390,9 +445,13 @@ tests/
   on the site.
 * **Telemetry pages load slowly** — raise `TELEMETRY_WAIT_MS` in `.env` (default
   10000 ms per location). The run also keeps polling past that wait.
+* **One day of a multi-day run failed** — open **Problemi**, which names the
+  devices and the reason per day, and press *Ponovi ovaj dan*. The days that did
+  work are already saved; nothing has to be re-run for them.
 * **A report is missing from Izvještaji** — the list is a live listing of the
-  reports folder (the path is printed under the card title; locally it is the
-  Desktop), minus any row hidden with ✕. ✕ never touches the file, so
+  reports folder (**📁 Otvori folder** opens it, and 📁 on a row shows that one
+  file in it; locally it is the Desktop), minus any row hidden with ✕. ✕ never
+  touches the file, so
   **Vrati uklonjene** brings the rows back, and re-running a hidden date
   un-hides it automatically. The hidden dates live in `hidden_reports.json`
   next to the app.

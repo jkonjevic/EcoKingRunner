@@ -1,9 +1,13 @@
 import json
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ecoking import stations as registry
+from ecoking import webapp
 from ecoking.stations import ExcelRow, Station
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +38,22 @@ class DeviceLabelTests(unittest.TestCase):
     def test_whitespace_is_collapsed(self) -> None:
         self.assertEqual(registry.device_label("  358004092236694 -  Herceg Novi -  Topla  - I "), "Topla - I")
 
+    def test_the_repeated_serial_in_brackets_is_stripped(self) -> None:
+        self.assertEqual(
+            registry.device_label(
+                "358004092223510 - Herceg Novi - (R-PO) Podi - I (358004092223510)"
+            ),
+            "(R-PO) Podi - I",
+        )
+
+    def test_reducing_an_already_short_label_changes_nothing(self) -> None:
+        # Idempotence is what lets score_device_match reduce both sides.
+        for label in ("(R-PO) Podi - I", "Bajer 1 - U", "Direktna prema Baošićima DN300"):
+            self.assertEqual(registry.device_label(label), label)
+
+    def test_a_bracketed_code_is_not_mistaken_for_a_serial(self) -> None:
+        self.assertEqual(registry.device_label("Podi - I (rezerva)"), "Podi - I (rezerva)")
+
 
 class DeviceMatchTests(unittest.TestCase):
     def test_short_label_matches_the_full_site_entry(self) -> None:
@@ -56,6 +76,22 @@ class DeviceMatchTests(unittest.TestCase):
         right = registry.score_device_match("Podi - I", "(PS-PO) Podi - I")
         self.assertEqual(left, right)
         self.assertGreater(left, 0)
+
+    def test_a_dropdown_entry_pasted_whole_matches_the_device_it_came_from(self) -> None:
+        # Pasting the site's own entry is the obvious way to disambiguate a
+        # name, and it used to score zero because only the option was reduced.
+        site_entry = "358004092223510 - Herceg Novi - (R-PO) Podi - I (358004092223510)"
+        label = registry.device_label(site_entry)
+        self.assertEqual(
+            registry.score_device_match("358004092223510 - Herceg Novi - (R-PO) Podi - I", label),
+            registry.score_device_match("(R-PO) Podi - I", label),
+        )
+        self.assertGreater(registry.score_device_match(site_entry, label), 0)
+
+    def test_a_pasted_entry_still_refuses_the_wrong_device(self) -> None:
+        pasted = "358004092223510 - Herceg Novi - (R-PO) Podi - I"
+        self.assertEqual(registry.score_device_match(pasted, "(PS-PO) Podi - I"), 0)
+        self.assertEqual(registry.score_device_match(pasted, "(R-PO) Podi - U"), 0)
 
     def test_navigation_entries_are_recognised(self) -> None:
         self.assertTrue(registry.is_navigation_option("Device List"))
@@ -242,6 +278,40 @@ class ShippedRegistryTests(unittest.TestCase):
         for station in registry.load_stations(path):
             self.assertNotRegex(station.uredjaj, r"\d{8,}", station.label)
             self.assertNotIn("herceg novi", registry.normalize(station.uredjaj), station.label)
+
+
+class SaveNormalisationTests(unittest.TestCase):
+    """Saving from the UI is what keeps the file free of pasted site entries."""
+
+    def setUp(self) -> None:
+        if not TEMPLATE.exists():
+            self.skipTest(f"{TEMPLATE.name} is not available.")
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        patch = mock.patch.dict(
+            os.environ,
+            {"DATA_DIR": str(self.tmp), "ECOKING_MODE": "cloud", "STATIONS_PATH": str(self.tmp / "stations.json")},
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_pasted_dropdown_entry_is_stored_in_the_short_form(self) -> None:
+        row = registry.load_excel_rows(TEMPLATE)[0]
+        saved = webapp.save_stations_payload(
+            {
+                "stations": [
+                    {
+                        "lokacija": row.lokacija,
+                        "vodomjer": row.vodomjer,
+                        "uredjaj": "358004092223510 - Herceg Novi - (R-PO) Podi - I (358004092223510)",
+                        "enabled": True,
+                    }
+                ]
+            }
+        )
+        self.assertEqual(saved["stations"][0]["uredjaj"], "(R-PO) Podi - I")
+        on_disk = json.loads((self.tmp / "stations.json").read_text(encoding="utf-8"))
+        self.assertNotRegex(json.dumps(on_disk), r"\d{8,}")
 
 
 if __name__ == "__main__":
