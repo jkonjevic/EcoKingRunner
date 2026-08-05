@@ -267,7 +267,10 @@ def index_excel_rows(rows: Iterable[ExcelRow]) -> dict[tuple[str, str], ExcelRow
 def resolve_stations_path(explicit: str | Path | None, root: Path) -> Path:
     """Pick the registry file: an explicit path, then the new file, then legacy."""
     if explicit:
-        return Path(explicit).expanduser()
+        path = Path(explicit).expanduser()
+        if not path.is_absolute():
+            return (root / path).resolve()
+        return path
     preferred = root / DEFAULT_STATIONS_FILE
     if preferred.exists():
         return preferred

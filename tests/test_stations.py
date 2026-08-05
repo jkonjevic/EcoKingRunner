@@ -219,6 +219,13 @@ class FileTests(unittest.TestCase):
     def test_a_missing_file_reads_as_empty(self) -> None:
         self.assertEqual(registry.load_stations(Path("no-such-file.json")), [])
 
+    def test_explicit_relative_path_is_resolved_against_the_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "stations.json"
+            target.write_text("[]", encoding="utf-8")
+            self.assertEqual(registry.resolve_stations_path("stations.json", root), target)
+
     def test_stations_json_wins_over_the_legacy_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
